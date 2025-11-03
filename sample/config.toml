@@ -1,0 +1,32 @@
+llm_configuration = "./sample/llm_configuration.toml"
+
+[server]
+listen = "0.0.0.0:8080"
+#tls = { private_key_file = "/path/to/privkey.pem", certificate_chain_file = "/path/to/cert.pem" }
+#api_key = "API_KEY"
+#api_key_file = "/path/to/apikey.toml"
+client_fallback_enabled = true
+
+[usage_store]
+type = "Local"
+
+#[usage_store]
+#type = "Redis"
+#host = "localhost"
+#port = 6379
+#db = 0
+#username = "user"
+#password = "password"
+#password_env = "REDIS_PASSWORD"
+#ca_cert_file = "/path/to/redis/ca.pem"
+#client_cert_file = "/path/to/redis/cert.pem"
+#client_key_file = "/path/to/redis/key.pem"
+#response_timeout_seconds = 3
+#connect_timeout_seconds = 3
+
+[token_measure]
+type = "ByteLength"
+magnification_ratio = 0.3
+
+#type = "CharCount"
+#magnification_ratio = 0.5

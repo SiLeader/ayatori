@@ -1,0 +1,10 @@
+[[providers]]
+id = "ollama-gemma3"
+default = true
+type = "Ollama"
+priority = 0
+model = "gemma3:4b"
+tags = ["light", "summarize"]
+credential_file = "./sample/credentials/ollama-gemma3.toml"
+endpoint = "http://localhost:11434"
+capacity = { input_tokens = 5000, requests = 5 }

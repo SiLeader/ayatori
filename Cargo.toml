@@ -1,0 +1,57 @@
+[workspace]
+members = ["configuration", "llm-composer", "llm-selector", "server", "token-measure"]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+configuration = { path = "configuration" }
+llm-composer = { path = "llm-composer" }
+llm-selector = { path = "llm-selector" }
+server = { path = "server" }
+token-measure = { path = "token-measure" }
+
+tracing = "0.1.41"
+tracing-subscriber = "0.3.20"
+
+async-trait = "0.1.89"
+tokio = "1.48.0"
+
+serde = "1.0.228"
+toml = "0.9.8"
+
+redis = "0.32.7"
+
+genai = "0.4.3"
+
+actix-web = "4.11.0"
+actix-web-httpauth = "0.8.2"
+
+uuid = "1.18.1"
+base64 = "0.22.1"
+chrono = "0.4.42"
+
+clap = "4.5.51"
+
+[package]
+name = "ayatori"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+configuration.workspace = true
+llm-selector.workspace = true
+server.workspace = true
+token-measure.workspace = true
+
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+
+serde = { workspace = true, features = ["derive"] }
+toml.workspace = true
+
+clap = { workspace = true, features = ["derive"] }
+
+tokio = { workspace = true, features = ["full"] }
