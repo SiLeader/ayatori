@@ -28,7 +28,7 @@ genai = "0.4.4"
 actix-web = "4.12.1"
 actix-web-httpauth = "0.8.2"
 
-uuid = "1.18.1"
+uuid = "1.19.0"
 base64 = "0.22.1"
 chrono = "0.4.42"
 
