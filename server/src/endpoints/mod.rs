@@ -72,6 +72,7 @@ impl From<genai::Error> for ErrorResponse {
             | genai::Error::EventSourceClone(_)
             | genai::Error::JsonValueExt(_)
             | genai::Error::ReqwestEventSource(_)
+            | genai::Error::ServiceTierParsing { .. }
             | genai::Error::SerdeJson(_) => ErrorResponse::Internal,
         }
     }

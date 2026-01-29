@@ -1,0 +1,78 @@
+name: Run tests and lints
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Cache build
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            target
+            .cargo
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-test-
+
+      - name: Run tests
+        shell: bash
+        run: |
+          cargo test --workspace
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Cache build
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            target
+            .cargo
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-lint-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-lint-
+
+      - name: Run clippy
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace -- -D warnings
+
+  license:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Cache build
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            target
+            .cargo
+          key: ${{ runner.os }}-cargo-license-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-license-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-license-
+
+      - name: Install cargo deny check
+        shell: bash
+        run: |
+          cargo install --locked cargo-deny
+
+      - name: Run cargo deny check
+        shell: bash
+        run: |
+          cargo deny check
