@@ -1,8 +1,8 @@
 use crate::{Usage, UsageError, UsageStore};
 use redis::aio::MultiplexedConnection;
 use redis::{
-    AsyncConnectionConfig, Client, ClientTlsConfig, ConnectionAddr, ConnectionInfo, ErrorKind,
-    RedisConnectionInfo, RedisError, RedisResult, TlsCertificates, pipe,
+    AsyncConnectionConfig, Client, ClientTlsConfig, ErrorKind, IntoConnectionInfo, RedisError,
+    RedisResult, TlsCertificates, pipe,
 };
 use std::fs::read;
 use std::path::Path;
@@ -55,8 +55,8 @@ impl RedisUsageStore {
             .client
             .get_multiplexed_async_connection_with_config(
                 &AsyncConnectionConfig::default()
-                    .set_connection_timeout(self.connect_timeout)
-                    .set_response_timeout(self.response_timeout),
+                    .set_connection_timeout(Some(self.connect_timeout))
+                    .set_response_timeout(Some(self.response_timeout)),
             )
             .await?)
     }
@@ -117,25 +117,26 @@ impl UsageStore for RedisUsageStore {
 
 impl RedisUsageStoreBuilder {
     pub fn build(self) -> RedisResult<RedisUsageStore> {
+        let base_url = {
+            let user_password = match &self.username {
+                None => match &self.password {
+                    None => "".to_string(),
+                    Some(password) => format!(":{}@", password),
+                },
+                Some(username) => match &self.password {
+                    None => format!("{}@", username),
+                    Some(password) => format!("{}:{}@", username, password),
+                },
+            };
+            format!("{user_password}{}:{}/{}", self.host, self.port, self.db)
+        };
         let client = if let Some(ca_cert) = self.ca_cert {
             let client_cert_key_pair = self
                 .client_cert
                 .and_then(|c| self.client_key.map(|k| (c, k)));
+            let ci = format!("rediss://{base_url}").into_connection_info()?;
             Client::build_with_tls(
-                ConnectionInfo {
-                    addr: ConnectionAddr::TcpTls {
-                        host: self.host,
-                        port: self.port,
-                        insecure: false,
-                        tls_params: None,
-                    },
-                    redis: RedisConnectionInfo {
-                        db: self.db,
-                        username: self.username,
-                        password: self.password,
-                        protocol: Default::default(),
-                    },
-                },
+                ci,
                 TlsCertificates {
                     client_tls: client_cert_key_pair.map(|(c, k)| ClientTlsConfig {
                         client_cert: c,
@@ -145,15 +146,8 @@ impl RedisUsageStoreBuilder {
                 },
             )
         } else {
-            Client::open(ConnectionInfo {
-                addr: ConnectionAddr::Tcp(self.host, self.port),
-                redis: RedisConnectionInfo {
-                    db: self.db,
-                    username: self.username,
-                    password: self.password,
-                    protocol: Default::default(),
-                },
-            })
+            let ci = format!("redis://{base_url}").into_connection_info()?;
+            Client::open(ci)
         }?;
         Ok(RedisUsageStore {
             client,
@@ -219,30 +213,12 @@ impl RedisUsageStoreBuilder {
 impl From<RedisError> for UsageError {
     fn from(value: RedisError) -> Self {
         let kind = match value.kind() {
-            ErrorKind::ResponseError => std::io::ErrorKind::InvalidData,
-            ErrorKind::ParseError => std::io::ErrorKind::InvalidData,
             ErrorKind::AuthenticationFailed => std::io::ErrorKind::PermissionDenied,
-            ErrorKind::TypeError => std::io::ErrorKind::InvalidData,
-            ErrorKind::ExecAbortError => std::io::ErrorKind::ConnectionAborted,
-            ErrorKind::BusyLoadingError => std::io::ErrorKind::ResourceBusy,
-            ErrorKind::NoScriptError => std::io::ErrorKind::InvalidData,
             ErrorKind::InvalidClientConfig => std::io::ErrorKind::ConnectionRefused,
-            ErrorKind::Moved => std::io::ErrorKind::InvalidFilename,
-            ErrorKind::Ask => std::io::ErrorKind::InvalidData,
-            ErrorKind::TryAgain => std::io::ErrorKind::ResourceBusy,
-            ErrorKind::ClusterDown => std::io::ErrorKind::ConnectionRefused,
-            ErrorKind::CrossSlot => std::io::ErrorKind::InvalidData,
-            ErrorKind::MasterDown => std::io::ErrorKind::ConnectionRefused,
-            ErrorKind::IoError => std::io::ErrorKind::InvalidData,
-            ErrorKind::ClientError => std::io::ErrorKind::InvalidData,
-            ErrorKind::ExtensionError => std::io::ErrorKind::InvalidData,
-            ErrorKind::ReadOnly => std::io::ErrorKind::PermissionDenied,
             ErrorKind::MasterNameNotFoundBySentinel => std::io::ErrorKind::ConnectionRefused,
             ErrorKind::NoValidReplicasFoundBySentinel => std::io::ErrorKind::ConnectionRefused,
             ErrorKind::EmptySentinelList => std::io::ErrorKind::ConnectionRefused,
-            ErrorKind::NotBusy => std::io::ErrorKind::ConnectionRefused,
             ErrorKind::ClusterConnectionNotFound => std::io::ErrorKind::ConnectionRefused,
-            ErrorKind::NoSub => std::io::ErrorKind::InvalidData,
             ErrorKind::RESP3NotSupported => std::io::ErrorKind::Unsupported,
             _ => std::io::ErrorKind::InvalidData,
         };
