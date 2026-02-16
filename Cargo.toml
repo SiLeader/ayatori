@@ -30,7 +30,7 @@ actix-web-httpauth = "0.8.2"
 
 uuid = "1.19.0"
 base64 = "0.22.1"
-chrono = "0.4.42"
+chrono = "0.4.43"
 
 clap = "4.5.53"
 
