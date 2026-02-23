@@ -146,7 +146,9 @@ mod tests {
     #[test]
     fn no_key_configured_token_provided() {
         let api_key = ApiKey(None);
-        let err = api_key.check_api_key_using_token_str(Some("any")).unwrap_err();
+        let err = api_key
+            .check_api_key_using_token_str(Some("any"))
+            .unwrap_err();
         assert_eq!(error_code(err), "incorrect_api_key_provided");
     }
 
@@ -160,13 +162,19 @@ mod tests {
     #[test]
     fn key_configured_matching_token() {
         let api_key = ApiKey(Some("secret".to_string()));
-        assert!(api_key.check_api_key_using_token_str(Some("secret")).is_ok());
+        assert!(
+            api_key
+                .check_api_key_using_token_str(Some("secret"))
+                .is_ok()
+        );
     }
 
     #[test]
     fn key_configured_wrong_token() {
         let api_key = ApiKey(Some("secret".to_string()));
-        let err = api_key.check_api_key_using_token_str(Some("wrong")).unwrap_err();
+        let err = api_key
+            .check_api_key_using_token_str(Some("wrong"))
+            .unwrap_err();
         assert_eq!(error_code(err), "incorrect_api_key_provided");
     }
 }
