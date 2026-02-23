@@ -23,7 +23,7 @@ toml = "0.9.10"
 
 redis = "1.0.2"
 
-genai = "0.4.4"
+genai = "0.5.1"
 
 actix-web = "4.12.1"
 actix-web-httpauth = "0.8.2"
