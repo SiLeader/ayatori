@@ -1,13 +1,16 @@
 use crate::error::ErrorResponse;
 use crate::{ApiKey, AppConfig};
-use actix_web::web::{Data, Json};
+use actix_web::web::{Bytes, Data, Json};
 use actix_web::{HttpResponse, post};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use chrono::Utc;
+use futures::StreamExt;
 use llm_selector::genai::Client;
-use llm_selector::genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatRole, MessageContent};
+use llm_selector::genai::chat::{
+    ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStreamEvent, MessageContent,
+};
 use llm_selector::{LlmSelector, Usage};
 use serde::{Deserialize, Serialize};
 use token_measure::{MeasureToken, TokenMeasure};
@@ -22,6 +25,8 @@ pub(super) struct ChatCompletionRequest {
     max_tokens: Option<u32>,
     max_completion_tokens: Option<u32>,
     top_p: Option<f64>,
+    #[serde(default)]
+    stream: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +61,31 @@ struct MessageUsage {
     completion_tokens: i32,
     prompt_tokens: i32,
     total_tokens: i32,
+}
+
+#[derive(Serialize)]
+struct ChatCompletionChunkResponse {
+    id: String,
+    object: String,
+    created: i64,
+    model: String,
+    choices: Vec<ChunkChoice>,
+    ayatori_client_id: String,
+}
+
+#[derive(Serialize)]
+struct ChunkChoice {
+    index: u32,
+    delta: Delta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Delta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
 }
 
 #[post("/v1/chat/completions")]
@@ -129,22 +159,37 @@ pub(super) async fn handle_chat_completion(
         error!("Append usage failed: {e:?}");
     }
 
+    let chat_req = ChatRequest {
+        system,
+        messages,
+        tools: None,
+    };
+
+    let chat_options = ChatOptions {
+        temperature: request.temperature,
+        max_tokens: request.max_tokens.or(request.max_completion_tokens),
+        top_p: request.top_p,
+        stop_sequences: vec![],
+        ..Default::default()
+    };
+
+    if request.stream.unwrap_or(false) {
+        handle_streaming(client, chat_req, chat_options, selector, id, usage).await
+    } else {
+        handle_non_streaming(client, chat_req, chat_options, selector, id, usage).await
+    }
+}
+
+async fn handle_non_streaming(
+    client: Client,
+    chat_req: ChatRequest,
+    chat_options: ChatOptions,
+    selector: Data<LlmSelector>,
+    id: String,
+    usage: Usage,
+) -> HttpResponse {
     let res = client
-        .exec_chat(
-            "",
-            ChatRequest {
-                system,
-                messages,
-                tools: None,
-            },
-            Some(&ChatOptions {
-                temperature: request.temperature,
-                max_tokens: request.max_tokens.or(request.max_completion_tokens),
-                top_p: request.top_p,
-                stop_sequences: vec![],
-                ..Default::default()
-            }),
-        )
+        .exec_chat("", chat_req, Some(&chat_options))
         .await;
 
     if let Err(e) = selector.remove_usage(&id, &usage).await {
@@ -177,6 +222,120 @@ pub(super) async fn handle_chat_completion(
         }
         Err(e) => ErrorResponse::from(e).into(),
     }
+}
+
+async fn handle_streaming(
+    client: Client,
+    chat_req: ChatRequest,
+    chat_options: ChatOptions,
+    selector: Data<LlmSelector>,
+    id: String,
+    usage: Usage,
+) -> HttpResponse {
+    let stream_res = client
+        .exec_chat_stream("", chat_req, Some(&chat_options))
+        .await;
+
+    let stream_res = match stream_res {
+        Ok(r) => r,
+        Err(e) => {
+            if let Err(e) = selector.remove_usage(&id, &usage).await {
+                error!("Remove usage failed: {e:?}");
+            }
+            return ErrorResponse::from(e).into();
+        }
+    };
+
+    let model_name = stream_res.model_iden.model_name.to_string();
+    let response_id = format!("ayatori-{}", BASE64_URL_SAFE_NO_PAD.encode(Uuid::new_v4()));
+    let created = Utc::now().timestamp();
+
+    let selector_clone = selector.into_inner();
+    let id_clone = id.clone();
+
+    let sse_stream = stream_res.stream.map(move |event| {
+        let event = match event {
+            Ok(e) => e,
+            Err(e) => {
+                error!("Stream error: {e:?}");
+                return Ok::<Bytes, actix_web::Error>(Bytes::new());
+            }
+        };
+
+        match event {
+            ChatStreamEvent::Start => {
+                let chunk = ChatCompletionChunkResponse {
+                    id: response_id.clone(),
+                    object: "chat.completion.chunk".to_string(),
+                    created,
+                    model: model_name.clone(),
+                    choices: vec![ChunkChoice {
+                        index: 0,
+                        delta: Delta {
+                            role: Some("assistant".to_string()),
+                            content: None,
+                        },
+                        finish_reason: None,
+                    }],
+                    ayatori_client_id: id_clone.clone(),
+                };
+                let json = serde_json::to_string(&chunk).unwrap_or_default();
+                Ok(Bytes::from(format!("data: {json}\n\n")))
+            }
+            ChatStreamEvent::Chunk(c) => {
+                let chunk = ChatCompletionChunkResponse {
+                    id: response_id.clone(),
+                    object: "chat.completion.chunk".to_string(),
+                    created,
+                    model: model_name.clone(),
+                    choices: vec![ChunkChoice {
+                        index: 0,
+                        delta: Delta {
+                            role: None,
+                            content: Some(c.content),
+                        },
+                        finish_reason: None,
+                    }],
+                    ayatori_client_id: id_clone.clone(),
+                };
+                let json = serde_json::to_string(&chunk).unwrap_or_default();
+                Ok(Bytes::from(format!("data: {json}\n\n")))
+            }
+            ChatStreamEvent::End(_) => {
+                let selector = selector_clone.clone();
+                let id = id_clone.clone();
+                let usage = usage.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = selector.remove_usage(&id, &usage).await {
+                        error!("Remove usage failed: {e:?}");
+                    }
+                });
+
+                let chunk = ChatCompletionChunkResponse {
+                    id: response_id.clone(),
+                    object: "chat.completion.chunk".to_string(),
+                    created,
+                    model: model_name.clone(),
+                    choices: vec![ChunkChoice {
+                        index: 0,
+                        delta: Delta {
+                            role: None,
+                            content: None,
+                        },
+                        finish_reason: Some("stop".to_string()),
+                    }],
+                    ayatori_client_id: id_clone.clone(),
+                };
+                let json = serde_json::to_string(&chunk).unwrap_or_default();
+                Ok(Bytes::from(format!("data: {json}\n\ndata: [DONE]\n\n")))
+            }
+            _ => Ok(Bytes::new()),
+        }
+    });
+
+    HttpResponse::Ok()
+        .content_type("text/event-stream")
+        .streaming(sse_stream)
 }
 
 enum RequestModel {
