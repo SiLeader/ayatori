@@ -215,12 +215,12 @@ pub(super) async fn handle_chat_completion(
                 if let Some(ref text) = content {
                     token_count += token_measure.measure_token(&id, text).await.unwrap_or(0);
                 }
-                if let Some(ref tcs) = tool_calls {
+                if let Some(tcs) = tool_calls {
                     let genai_tool_calls: Vec<ToolCall> = tcs
-                        .iter()
+                        .into_iter()
                         .map(|tc| ToolCall {
-                            call_id: tc.id.clone(),
-                            fn_name: tc.function.name.clone(),
+                            call_id: tc.id,
+                            fn_name: tc.function.name,
                             fn_arguments: serde_json::from_str(&tc.function.arguments).unwrap_or(
                                 serde_json::Value::String(tc.function.arguments.clone()),
                             ),
