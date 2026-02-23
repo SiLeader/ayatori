@@ -12,6 +12,7 @@ pub(crate) struct ErrorResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 enum ErrorType {
     InvalidRequestError,
     AuthenticationError,
@@ -197,7 +198,7 @@ impl From<genai::Error> for ErrorResponse {
                 ..
             } => ErrorResponse {
                 status: StatusCode::from_u16(status.as_u16())
-                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR),
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 error: ApiError::chat_response(canonical_reason),
             },
         }
