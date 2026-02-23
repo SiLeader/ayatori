@@ -55,8 +55,12 @@ struct FunctionDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 enum Message {
-    System { content: String },
-    User { content: String },
+    System {
+        content: String,
+    },
+    User {
+        content: String,
+    },
     Assistant {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<String>,
@@ -209,10 +213,7 @@ pub(super) async fn handle_chat_completion(
                 tool_calls,
             } => {
                 if let Some(ref text) = content {
-                    token_count += token_measure
-                        .measure_token(&id, text)
-                        .await
-                        .unwrap_or(0);
+                    token_count += token_measure.measure_token(&id, text).await.unwrap_or(0);
                 }
                 if let Some(ref tcs) = tool_calls {
                     let genai_tool_calls: Vec<ToolCall> = tcs
@@ -220,10 +221,9 @@ pub(super) async fn handle_chat_completion(
                         .map(|tc| ToolCall {
                             call_id: tc.id.clone(),
                             fn_name: tc.function.name.clone(),
-                            fn_arguments: serde_json::from_str(&tc.function.arguments)
-                                .unwrap_or(serde_json::Value::String(
-                                    tc.function.arguments.clone(),
-                                )),
+                            fn_arguments: serde_json::from_str(&tc.function.arguments).unwrap_or(
+                                serde_json::Value::String(tc.function.arguments.clone()),
+                            ),
                             thought_signatures: None,
                         })
                         .collect();
