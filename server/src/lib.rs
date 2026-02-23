@@ -44,15 +44,19 @@ impl TlsConfig {
 }
 
 impl ApiKey {
-    fn check_api_key(&self, auth: Option<BearerAuth>) -> Result<(), ErrorResponse> {
+    fn check_api_key_using_token_str(&self, auth: Option<&str>) -> Result<(), ErrorResponse> {
         if let Some(auth) = auth {
-            if self.0.as_ref().is_some_and(|s| auth.token() == s) {
+            if self.0.as_ref().is_none_or(|s| auth != s) {
                 return Err(ErrorResponse::incorrect_api_key_provided());
             }
-        } else if self.0.is_none() {
+        } else if self.0.is_some() {
             return Err(ErrorResponse::invalid_authentication());
         }
         Ok(())
+    }
+
+    fn check_api_key(&self, auth: Option<BearerAuth>) -> Result<(), ErrorResponse> {
+        self.check_api_key_using_token_str(auth.as_ref().map(|a| a.token()))
     }
 }
 
@@ -122,4 +126,55 @@ impl OpenAiServer {
 #[get("/healthz")]
 async fn health_check() -> HttpResponse {
     HttpResponse::Ok().finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error_code(err: ErrorResponse) -> String {
+        let value = serde_json::to_value(err).unwrap();
+        value["error"]["code"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn no_key_configured_no_token_provided() {
+        let api_key = ApiKey(None);
+        assert!(api_key.check_api_key_using_token_str(None).is_ok());
+    }
+
+    #[test]
+    fn no_key_configured_token_provided() {
+        let api_key = ApiKey(None);
+        let err = api_key
+            .check_api_key_using_token_str(Some("any"))
+            .unwrap_err();
+        assert_eq!(error_code(err), "incorrect_api_key_provided");
+    }
+
+    #[test]
+    fn key_configured_no_token_provided() {
+        let api_key = ApiKey(Some("secret".to_string()));
+        let err = api_key.check_api_key_using_token_str(None).unwrap_err();
+        assert_eq!(error_code(err), "invalid_authentication");
+    }
+
+    #[test]
+    fn key_configured_matching_token() {
+        let api_key = ApiKey(Some("secret".to_string()));
+        assert!(
+            api_key
+                .check_api_key_using_token_str(Some("secret"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn key_configured_wrong_token() {
+        let api_key = ApiKey(Some("secret".to_string()));
+        let err = api_key
+            .check_api_key_using_token_str(Some("wrong"))
+            .unwrap_err();
+        assert_eq!(error_code(err), "incorrect_api_key_provided");
+    }
 }
