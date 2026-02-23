@@ -188,9 +188,7 @@ async fn handle_non_streaming(
     id: String,
     usage: Usage,
 ) -> HttpResponse {
-    let res = client
-        .exec_chat("", chat_req, Some(&chat_options))
-        .await;
+    let res = client.exec_chat("", chat_req, Some(&chat_options)).await;
 
     if let Err(e) = selector.remove_usage(&id, &usage).await {
         error!("Remove usage failed: {e:?}");
