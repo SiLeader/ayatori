@@ -46,10 +46,10 @@ impl TlsConfig {
 impl ApiKey {
     fn check_api_key(&self, auth: Option<BearerAuth>) -> Result<(), ErrorResponse> {
         if let Some(auth) = auth {
-            if self.0.as_ref().is_some_and(|s| auth.token() == s) {
+            if self.0.as_ref().is_none_or(|s| auth.token() != s) {
                 return Err(ErrorResponse::incorrect_api_key_provided());
             }
-        } else if self.0.is_none() {
+        } else if self.0.is_some() {
             return Err(ErrorResponse::invalid_authentication());
         }
         Ok(())
