@@ -2267,10 +2267,13 @@ dependencies = [
  "actix-web-httpauth",
  "base64",
  "chrono",
+ "futures",
  "llm-selector",
  "rustls",
  "serde",
+ "serde_json",
  "token-measure",
+ "tokio",
  "tracing",
  "uuid",
 ]
