@@ -1,5 +1,7 @@
 mod endpoints;
+mod error;
 
+use crate::error::ErrorResponse;
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use actix_web::{App, HttpResponse, HttpServer, get};
@@ -42,12 +44,15 @@ impl TlsConfig {
 }
 
 impl ApiKey {
-    fn is_match(&self, auth: Option<BearerAuth>) -> bool {
+    fn check_api_key(&self, auth: Option<BearerAuth>) -> Result<(), ErrorResponse> {
         if let Some(auth) = auth {
-            self.0.as_ref().is_some_and(|s| auth.token() == s)
-        } else {
-            self.0.is_none()
+            if self.0.as_ref().is_some_and(|s| auth.token() == s) {
+                return Err(ErrorResponse::incorrect_api_key_provided());
+            }
+        } else if self.0.is_none() {
+            return Err(ErrorResponse::invalid_authentication());
         }
+        Ok(())
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::endpoints::ErrorResponse;
+use crate::error::ErrorResponse;
 use crate::{ApiKey, AppConfig};
 use actix_web::web::{Data, Json};
 use actix_web::{HttpResponse, post};
@@ -67,8 +67,8 @@ pub(super) async fn handle_chat_completion(
     token_measure: Data<TokenMeasure>,
     request: Json<ChatCompletionRequest>,
 ) -> HttpResponse {
-    if !api_key.is_match(bearer_auth) {
-        return ErrorResponse::InvalidApiKey.into();
+    if let Err(e) = api_key.check_api_key(bearer_auth) {
+        return e.into();
     }
     let model = RequestModel::from(request.model.clone());
     let client = model.select_model(&selector).await;
@@ -77,7 +77,7 @@ pub(super) async fn handle_chat_completion(
             if app_config.client_fallback_enabled {
                 selector.get_default_client()
             } else {
-                return ErrorResponse::ModelNotFound.into();
+                return ErrorResponse::model_not_found().into();
             }
         }
         Some(client) => client,
