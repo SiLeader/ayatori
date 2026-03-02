@@ -33,7 +33,7 @@ uuid = "1.19.0"
 base64 = "0.22.1"
 chrono = "0.4.43"
 
-clap = "4.5.53"
+clap = "4.5.56"
 
 [package]
 name = "ayatori"
