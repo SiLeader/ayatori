@@ -19,7 +19,7 @@ async-trait = "0.1.89"
 tokio = "1.49.0"
 
 serde = "1.0.228"
-toml = "0.9.10"
+toml = "0.9.12"
 
 redis = "1.0.3"
 
