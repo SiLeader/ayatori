@@ -21,7 +21,7 @@ tokio = "1.50.0"
 serde = "1.0.228"
 toml = "1.0.1"
 
-redis = "1.0.3"
+redis = "1.0.5"
 
 futures = "0.3"
 genai = "0.5.1"
