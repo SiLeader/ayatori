@@ -1,6 +1,6 @@
 use crate::anthropic::AnthropicResponsesProvider;
 use crate::azure::AzureOpenAiResponsesProvider;
-use crate::ollama::GenaiBackedProvider;
+use crate::genai::GenaiBackedProvider;
 use crate::openai::OpenAiResponsesProvider;
 use crate::vertexai::VertexAiResponsesProvider;
 use crate::{ResponsesError, ResponsesProvider};
