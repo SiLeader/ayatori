@@ -83,6 +83,10 @@ impl TagSelector {
     }
 
     fn get_candidate_ids(&self, tags: &[ModelTag]) -> HashSet<ModelId> {
+        if tags.is_empty() {
+            return self.client_priorities.keys().cloned().collect();
+        }
+
         let mut tags_iter = tags.iter();
         let Some(first_tag) = tags_iter.next() else {
             return HashSet::new();
