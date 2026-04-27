@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+llm-responses.workspace = true
 llm-selector.workspace = true
 token-measure.workspace = true
 
@@ -24,3 +25,4 @@ tokio = { workspace = true, features = ["sync"] }
 [dev-dependencies]
 actix-http = "3"
 configuration.workspace = true
+wiremock = "0.6"

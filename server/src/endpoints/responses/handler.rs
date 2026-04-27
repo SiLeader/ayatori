@@ -1,19 +1,17 @@
-use super::types::{CreateResponseRequest, ResponseObject, ResponseStatus};
+use super::CreateResponseRequest;
 use crate::error::ErrorResponse;
 use crate::model::RequestModel;
 use crate::{ApiKey, AppConfig};
 use actix_web::web::{Data, Json};
 use actix_web::{HttpResponse, post};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
-use base64::Engine;
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use chrono::Utc;
+use llm_responses::LlmResponsesComposer;
 use llm_selector::LlmSelector;
-use uuid::Uuid;
 
 #[post("/v1/responses")]
 pub(crate) async fn handle_create_response(
     selector: Data<LlmSelector>,
+    responses_composer: Data<LlmResponsesComposer>,
     api_key: Data<ApiKey>,
     bearer_auth: Option<BearerAuth>,
     app_config: Data<AppConfig>,
@@ -30,36 +28,16 @@ pub(crate) async fn handle_create_response(
         None => return ErrorResponse::model_not_found().into(),
     };
     let (id, _client) = client;
-
-    // TODO(phase2): replace this stub with a provider-backed implementation.
-    let response = ResponseObject {
-        id: format!(
-            "resp_{}",
-            BASE64_URL_SAFE_NO_PAD.encode(Uuid::new_v4().as_bytes())
-        ),
-        object: "response",
-        created_at: Utc::now().timestamp(),
-        status: ResponseStatus::Completed,
-        model: request.model.clone(),
-        output: vec![],
-        output_text: Some("(stub: not yet implemented)".to_string()),
-        usage: None,
-        error: None,
-        incomplete_details: None,
-        previous_response_id: request.previous_response_id.clone(),
-        metadata: request.metadata.clone(),
-        parallel_tool_calls: request.parallel_tool_calls,
-        temperature: request.temperature,
-        top_p: request.top_p,
-        max_output_tokens: request.max_output_tokens,
-        reasoning: request.reasoning.clone(),
-        text: request.text.clone(),
-        tool_choice: request.tool_choice.clone(),
-        tools: request.tools.clone(),
-        truncation: request.truncation.clone(),
-        user: request.user.clone(),
-        ayatori_client_id: id,
+    let Some((_, provider)) = responses_composer.get_by_id(&id) else {
+        return ErrorResponse::model_not_found().into();
     };
+
+    let mut response = match provider.create_response(request.into_inner()).await {
+        Ok(response) => response,
+        Err(error) => return ErrorResponse::from(error).into(),
+    };
+    response.ayatori_client_id = id;
+    response.ensure_output_text();
 
     HttpResponse::Ok().json(response)
 }

@@ -3,13 +3,16 @@ use actix_web::http::StatusCode;
 use actix_web::test;
 use actix_web::web::Data;
 use configuration::{CapacityLimits, Configuration, LlmProvider, LlmProviderType};
+use llm_responses::LlmResponsesComposer;
 use llm_selector::{LlmSelector, UsageStoreConfig};
-use serde_json::Value;
+use serde_json::{Value, json};
 use server::{ApiKey, AppConfig, configure_openai_compatible_endpoints};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use token_measure::{ByteLengthTokenMeasure, TokenMeasure};
+use wiremock::matchers::{body_json, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -31,8 +34,8 @@ api_key = "test-key"
     path.to_string_lossy().into_owned()
 }
 
-async fn build_selector(model: &str) -> LlmSelector {
-    let configuration = Configuration {
+fn build_configuration(model: &str, endpoint: String) -> Configuration {
+    Configuration {
         providers: vec![LlmProvider {
             id: "stub-model".to_string(),
             default: Some(true),
@@ -42,19 +45,18 @@ async fn build_selector(model: &str) -> LlmSelector {
             model: model.to_string(),
             tags: vec!["test".to_string()],
             credential_file: write_credential_file(),
-            endpoint: "https://api.openai.com/v1".to_string(),
+            endpoint,
             capacity: CapacityLimits {
                 input_tokens: None,
                 requests: None,
             },
         }],
-    };
-    let store = UsageStoreConfig::Local.create().await;
-    LlmSelector::new(configuration, store)
+    }
 }
 
 async fn build_app(
     model: &str,
+    endpoint: String,
     api_key: Option<&str>,
     client_fallback_enabled: bool,
 ) -> impl actix_web::dev::Service<
@@ -62,10 +64,15 @@ async fn build_app(
     Response = actix_web::dev::ServiceResponse,
     Error = actix_web::Error,
 > {
-    let selector = build_selector(model).await;
+    let configuration = build_configuration(model, endpoint);
+    let responses_composer = LlmResponsesComposer::new(configuration.clone());
+    let store = UsageStoreConfig::Local.create().await;
+    let selector = LlmSelector::new(configuration, store);
+
     test::init_service(
         App::new()
             .app_data(Data::new(selector))
+            .app_data(Data::new(responses_composer))
             .app_data(Data::new(ApiKey::new(api_key.map(str::to_string))))
             .app_data(Data::new(AppConfig::new(client_fallback_enabled)))
             .app_data(Data::new(TokenMeasure::new(ByteLengthTokenMeasure::new(
@@ -77,15 +84,52 @@ async fn build_app(
 }
 
 fn minimal_request(model: &str) -> Value {
-    serde_json::json!({
+    json!({
         "model": model,
         "input": "hello"
     })
 }
 
+fn upstream_response() -> Value {
+    json!({
+        "id": "resp_upstream",
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "gpt-4.1-mini",
+        "output": [{
+            "type": "message",
+            "id": "msg_1",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": "hello from upstream",
+                "annotations": []
+            }]
+        }]
+    })
+}
+
+async fn mount_openai_mock(server: &MockServer, provider_model: &str) {
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", "Bearer test-key"))
+        .and(body_json(json!({
+            "model": provider_model,
+            "input": "hello"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(upstream_response()))
+        .mount(server)
+        .await;
+}
+
 #[actix_web::test]
-async fn post_responses_returns_stub_response() {
-    let app = build_app("gpt-4.1-mini", None, true).await;
+async fn post_responses_returns_provider_response() {
+    let mock_server = MockServer::start().await;
+    mount_openai_mock(&mock_server, "gpt-4.1-mini").await;
+
+    let app = build_app("gpt-4.1-mini", mock_server.uri(), None, true).await;
     let req = test::TestRequest::post()
         .uri("/v1/responses")
         .set_json(minimal_request("gpt-4.1-mini"))
@@ -95,14 +139,17 @@ async fn post_responses_returns_stub_response() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body: Value = test::read_body_json(resp).await;
-    assert!(body["id"].as_str().unwrap().starts_with("resp_"));
+    assert_eq!(body["id"], "resp_upstream");
     assert_eq!(body["object"], "response");
-    assert_eq!(body["output_text"], "(stub: not yet implemented)");
+    assert_eq!(body["output_text"], "hello from upstream");
 }
 
 #[actix_web::test]
 async fn response_includes_ayatori_client_id() {
-    let app = build_app("gpt-4.1-mini", None, true).await;
+    let mock_server = MockServer::start().await;
+    mount_openai_mock(&mock_server, "gpt-4.1-mini").await;
+
+    let app = build_app("gpt-4.1-mini", mock_server.uri(), None, true).await;
     let req = test::TestRequest::post()
         .uri("/v1/responses")
         .set_json(minimal_request("gpt-4.1-mini"))
@@ -115,7 +162,8 @@ async fn response_includes_ayatori_client_id() {
 
 #[actix_web::test]
 async fn missing_bearer_token_returns_401_when_api_key_is_required() {
-    let app = build_app("gpt-4.1-mini", Some("secret"), true).await;
+    let mock_server = MockServer::start().await;
+    let app = build_app("gpt-4.1-mini", mock_server.uri(), Some("secret"), true).await;
     let req = test::TestRequest::post()
         .uri("/v1/responses")
         .set_json(minimal_request("gpt-4.1-mini"))
@@ -130,7 +178,8 @@ async fn missing_bearer_token_returns_401_when_api_key_is_required() {
 
 #[actix_web::test]
 async fn unknown_model_returns_404_when_fallback_is_disabled() {
-    let app = build_app("gpt-4.1-mini", None, false).await;
+    let mock_server = MockServer::start().await;
+    let app = build_app("gpt-4.1-mini", mock_server.uri(), None, false).await;
     let req = test::TestRequest::post()
         .uri("/v1/responses")
         .set_json(minimal_request("missing-model"))
@@ -145,7 +194,10 @@ async fn unknown_model_returns_404_when_fallback_is_disabled() {
 
 #[actix_web::test]
 async fn unknown_model_uses_default_client_when_fallback_is_enabled() {
-    let app = build_app("gpt-4.1-mini", None, true).await;
+    let mock_server = MockServer::start().await;
+    mount_openai_mock(&mock_server, "gpt-4.1-mini").await;
+
+    let app = build_app("gpt-4.1-mini", mock_server.uri(), None, true).await;
     let req = test::TestRequest::post()
         .uri("/v1/responses")
         .set_json(minimal_request("missing-model"))

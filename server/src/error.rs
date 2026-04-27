@@ -1,5 +1,6 @@
 use actix_web::HttpResponse;
 use actix_web::http::StatusCode;
+use llm_responses::ResponsesError;
 use llm_selector::genai;
 use serde::Serialize;
 
@@ -57,6 +58,13 @@ impl ErrorResponse {
             error: ApiError::incorrect_api_key_provided(),
         }
     }
+
+    fn internal(message: String) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            error: ApiError::internal(message),
+        }
+    }
 }
 
 impl ApiError {
@@ -84,6 +92,42 @@ impl ApiError {
             error_type: ErrorType::AuthenticationError,
             param: None,
             code: "incorrect_api_key_provided".to_string(),
+        }
+    }
+
+    fn invalid_request(message: String) -> Self {
+        Self {
+            message,
+            error_type: ErrorType::InvalidRequestError,
+            param: None,
+            code: "invalid_request".to_string(),
+        }
+    }
+
+    fn feature_not_supported(feature: &str) -> Self {
+        Self {
+            message: format!("Feature not supported: {feature}"),
+            error_type: ErrorType::InvalidRequestError,
+            param: None,
+            code: "feature_not_supported".to_string(),
+        }
+    }
+
+    fn upstream(message: String) -> Self {
+        Self {
+            message,
+            error_type: ErrorType::ApiError,
+            param: None,
+            code: "upstream_error".to_string(),
+        }
+    }
+
+    fn internal(message: String) -> Self {
+        Self {
+            message,
+            error_type: ErrorType::ApiError,
+            param: None,
+            code: "internal_error".to_string(),
         }
     }
 
@@ -201,6 +245,32 @@ impl From<genai::Error> for ErrorResponse {
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 error: ApiError::chat_response(canonical_reason),
             },
+        }
+    }
+}
+
+impl From<ResponsesError> for ErrorResponse {
+    fn from(value: ResponsesError) -> Self {
+        match value {
+            ResponsesError::Authentication => Self::invalid_authentication(),
+            ResponsesError::InvalidRequest(message) => Self {
+                status: StatusCode::BAD_REQUEST,
+                error: ApiError::invalid_request(message),
+            },
+            ResponsesError::Unsupported(feature) => Self {
+                status: StatusCode::BAD_REQUEST,
+                error: ApiError::feature_not_supported(feature),
+            },
+            ResponsesError::Http { status, body } => Self {
+                status: StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                error: ApiError::upstream(body),
+            },
+            ResponsesError::Transport(error) => Self::internal(format!("transport: {error}")),
+            ResponsesError::Serde(error) => Self::internal(format!("serde: {error}")),
+            ResponsesError::MalformedResponse(message) => {
+                Self::internal(format!("malformed response: {message}"))
+            }
+            ResponsesError::Internal(message) => Self::internal(message),
         }
     }
 }
