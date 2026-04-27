@@ -27,7 +27,7 @@ The project is structured as a Rust workspace with four main crates:
   - **Model-based**: Direct mapping of model name to client
   - **Tag-based**: Filters clients by tag intersection and selects by priority/usage
   - **ID-based**: Direct client lookup by provider ID
-- **TagSelector** (tag_selector.rs): Finds clients matching ALL requested tags, sorts by priority
+- **TagSelector** (tag_selector.rs): Finds clients matching ALL required tags while excluding any client that has an excluded tag; sorts results by priority. Empty include-tags list returns all providers (minus excluded).
 - **UsageSelector** (usage/selector.rs): Filters clients based on capacity limits (input_tokens, requests)
 - **UsageStore** trait: Tracks usage per client (currently only `LocalUsageStore` in-memory implementation)
 
@@ -35,10 +35,12 @@ The project is structured as a Rust workspace with four main crates:
 - Actix-web HTTP server exposing OpenAI-compatible API
 - Endpoint: `POST /v1/chat/completions` (chat_completion.rs)
 - Supports bearer token authentication (optional)
-- Special model selection syntax:
+- Special model selection syntax (parsed in `model.rs` → `RequestModel`):
   - `"model": "gpt-4"` - selects by model name
   - `"model": "tags:fast&cheap"` or `"model": "tag:fast&cheap"` - selects by tags (AND logic)
+  - `"model": "tags:fast&!vision"` - include tag `fast`, exclude providers tagged `vision`
   - `"model": "id:my-provider"` - selects by provider ID
+- Tags prefixed with `!` are exclude tags; remaining tags are include tags (all must match)
 - Returns custom field `ayatori_client_id` in response showing which backend was used
 - Supports TLS/HTTPS via rustls
 - `client_fallback_enabled`: Falls back to default client if no matching provider found

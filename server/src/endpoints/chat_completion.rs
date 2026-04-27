@@ -1,4 +1,5 @@
 use crate::error::ErrorResponse;
+use crate::model::RequestModel;
 use crate::{ApiKey, AppConfig};
 use actix_web::web::{Bytes, Data, Json};
 use actix_web::{HttpResponse, post};
@@ -528,36 +529,4 @@ async fn handle_streaming(
     HttpResponse::Ok()
         .content_type("text/event-stream")
         .streaming(sse_stream)
-}
-
-enum RequestModel {
-    Model(String),
-    Tags(Vec<String>),
-    Id(String),
-}
-
-impl RequestModel {
-    async fn select_model(self, llm_selector: &LlmSelector) -> Option<(String, Client)> {
-        match self {
-            RequestModel::Model(model) => llm_selector.select_client_by_model(&model).await,
-            RequestModel::Tags(tags) => llm_selector.select_client_by_tags(&tags).await,
-            RequestModel::Id(id) => llm_selector.select_client_by_id(&id).await,
-        }
-    }
-}
-
-impl From<String> for RequestModel {
-    fn from(value: String) -> Self {
-        let Some((scheme, content)) = value.split_once(':') else {
-            return Self::Model(value);
-        };
-
-        match scheme {
-            "tags" | "tag" => {
-                Self::Tags(content.split('&').map(|s| s.trim().to_string()).collect())
-            }
-            "id" => Self::Id(content.to_string()),
-            _ => Self::Model(value),
-        }
-    }
 }

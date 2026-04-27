@@ -1,4 +1,4 @@
-use crate::tag_selector::TagSelector;
+use crate::tag_selector::{ModelTag, TagSelector};
 use crate::usage::UsageSelector;
 pub use crate::usage::*;
 use configuration::Configuration;
@@ -28,8 +28,23 @@ impl LlmSelector {
         self.composer.get_client_by_model(model)
     }
 
-    pub async fn select_client_by_tags(&self, tags: &[String]) -> Option<(String, genai::Client)> {
-        let client_ids = self.tag_selector.get_client_ids_by_tags(tags);
+    pub async fn select_client_by_tags(
+        &self,
+        tags: Vec<String>,
+        exclude_tags: Vec<String>,
+    ) -> Option<(String, genai::Client)> {
+        let tags = tags.into_iter().map(ModelTag::from).collect::<Vec<_>>();
+        let exclude_tags = exclude_tags
+            .into_iter()
+            .map(ModelTag::from)
+            .collect::<Vec<_>>();
+
+        let client_ids = self
+            .tag_selector
+            .get_client_ids_by_tags(&tags, &exclude_tags)
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
         let client_id = match self.usage_selector.select_client(&client_ids).await {
             Ok(client_id) => client_id,
             Err(e) => {
