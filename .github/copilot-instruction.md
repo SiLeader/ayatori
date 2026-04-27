@@ -10,7 +10,7 @@ This is a Rust workspace with four main crates:
 
 - `configuration/` - Provider configuration schema and credential management
 - `llm-composer/` - LLM client pool management using the `genai` crate
-- `llm-selector/` - Core routing logic with tag-based, model-based, and ID-based selection
+- `llm-selector/` - Core routing logic with tag-based (include/exclude), model-based, and ID-based selection
 - `server/` - Actix-web HTTP server with OpenAI-compatible API endpoints
 
 ## Code Style and Conventions
@@ -57,11 +57,17 @@ This is a Rust workspace with four main crates:
 ## Architecture Patterns
 
 ### Request Selection Flow
-1. Parse model string to determine strategy (tags, model name, or ID)
-2. Tag-based: `TagSelector` finds matching clients → `UsageSelector` filters by capacity
+1. Parse model string to determine strategy (tags, model name, or ID) via `server/src/model.rs`
+2. Tag-based: `TagSelector` finds clients matching all include tags, filtered by exclude tags → `UsageSelector` filters by capacity
 3. Model-based: Direct lookup in composer's model map
 4. ID-based: Direct lookup in composer's client map
 5. Fallback to default client if enabled and no match found
+
+### Tag-based Selection Details
+- Include tags: all must be present on a provider (AND logic)
+- Exclude tags: provider is dropped if it has **any** of these tags
+- Empty include list: all providers are candidates (useful with exclude-only queries)
+- Parsed from model string: `tags:fast&cheap&!vision` → include `[fast, cheap]`, exclude `[vision]`
 
 ### Usage Tracking
 - `UsageStore` trait defines interface for tracking client usage
@@ -78,8 +84,9 @@ This is a Rust workspace with four main crates:
 
 - `configuration/src/credential.rs` - Provider credential types (Azure, Anthropic, etc.)
 - `llm-composer/src/client.rs` - Client creation and caching logic
-- `llm-selector/src/tag_selector.rs` - Tag-based filtering and priority sorting
+- `llm-selector/src/tag_selector.rs` - Tag-based filtering (include/exclude) and priority sorting
 - `llm-selector/src/usage/selector.rs` - Capacity-based filtering
+- `server/src/model.rs` - `RequestModel` enum and model string parsing (tag/model/id strategies)
 - `server/src/endpoints/chat_completion.rs` - Main API endpoint handler
 - `src/config.rs` - Application configuration loading
 - `src/main.rs` - Application entry point and setup
@@ -87,10 +94,12 @@ This is a Rust workspace with four main crates:
 ## Common Patterns to Use
 
 ### Model Selection Syntax
-When working with model strings:
+When working with model strings (parsed in `server/src/model.rs`):
 - `"gpt-4"` - Direct model name
-- `"tags:fast&cheap"` or `"tag:fast&cheap"` - Tag-based (AND logic)
+- `"tags:fast&cheap"` or `"tag:fast&cheap"` - Tag-based (AND logic, all must match)
+- `"tags:fast&!vision"` - Include `fast`, exclude providers tagged `vision`
 - `"id:my-provider"` - Direct provider ID
+- Tags prefixed with `!` are exclude tags; all other tags are include tags
 
 ### Adding New Provider Types
 1. Add variant to `LlmProviderType` enum in `configuration/src/lib.rs`
