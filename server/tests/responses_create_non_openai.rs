@@ -95,6 +95,25 @@ async fn build_app(
     .await
 }
 
+fn parse_sse_events(body: &[u8]) -> Vec<(String, Value)> {
+    String::from_utf8_lossy(body)
+        .split("\n\n")
+        .filter(|chunk| !chunk.trim().is_empty())
+        .map(|chunk| {
+            let mut event = String::new();
+            let mut data = String::new();
+            for line in chunk.lines() {
+                if let Some(value) = line.strip_prefix("event: ") {
+                    event = value.to_string();
+                } else if let Some(value) = line.strip_prefix("data: ") {
+                    data.push_str(value);
+                }
+            }
+            (event, serde_json::from_str(&data).unwrap())
+        })
+        .collect()
+}
+
 #[actix_web::test]
 async fn post_responses_accepts_anthropic_provider() {
     let mock_server = MockServer::start().await;
@@ -149,6 +168,81 @@ async fn post_responses_accepts_anthropic_provider() {
     let body: Value = test::read_body_json(resp).await;
     assert_eq!(body["output_text"], "hello from claude");
     assert_eq!(body["ayatori_client_id"], "anthropic-provider");
+}
+
+#[actix_web::test]
+async fn post_responses_streams_anthropic_provider() {
+    let mock_server = MockServer::start().await;
+    let upstream_stream = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"model\":\"claude-3-7-sonnet\",\"usage\":{\"input_tokens\":10}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello \"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"from claude\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n"
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("x-api-key", "test-key"))
+        .and(body_json(json!({
+            "model": "claude-3-7-sonnet",
+            "max_tokens": 4096,
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "hello"
+                }]
+            }],
+            "stream": true
+        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(upstream_stream),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let app = build_app(vec![TestProvider {
+        id: "anthropic-provider",
+        provider_type: LlmProviderType::Anthropic,
+        model: "claude-3-7-sonnet",
+        endpoint: mock_server.uri(),
+    }])
+    .await;
+    let req = test::TestRequest::post()
+        .uri("/v1/responses")
+        .set_json(json!({
+            "model": "claude-3-7-sonnet",
+            "input": "hello",
+            "stream": true
+        }))
+        .to_request();
+
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let events = parse_sse_events(&test::read_body(resp).await);
+    assert_eq!(events[0].0, "response.created");
+    assert_eq!(events[2].0, "response.output_item.added");
+    assert_eq!(events[4].1["delta"], "hello ");
+    assert_eq!(events[5].1["delta"], "from claude");
+    let completed = events.last().unwrap();
+    assert_eq!(completed.0, "response.completed");
+    assert_eq!(completed.1["response"]["output_text"], "hello from claude");
+    assert_eq!(
+        completed.1["response"]["ayatori_client_id"],
+        "anthropic-provider"
+    );
 }
 
 #[actix_web::test]

@@ -1,8 +1,11 @@
-use crate::http::{azure_responses_url, send_json};
-use crate::types::{CreateResponseRequest, ResponseObject};
+use crate::http::{azure_responses_url, send_json, send_stream};
+use crate::types::{CreateResponseRequest, ResponseObject, ResponseStreamEvent};
 use crate::{ProviderCapabilities, ResponsesError, ResponsesProvider};
 use async_trait::async_trait;
 use configuration::{Credential, LlmProvider};
+use eventsource_stream::Eventsource;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 
 const DEFAULT_API_VERSION: &str = "2025-04-01-preview";
 
@@ -56,6 +59,33 @@ impl ResponsesProvider for AzureOpenAiResponsesProvider {
         let url = azure_responses_url(&self.endpoint, &self.api_version);
         let request_builder = self.client.post(url).header("api-key", &self.api_key);
         send_json(request_builder, &request).await
+    }
+
+    async fn create_response_stream(
+        &self,
+        mut request: CreateResponseRequest,
+    ) -> Result<BoxStream<'static, Result<ResponseStreamEvent, ResponsesError>>, ResponsesError>
+    {
+        request.model = self.deployment.clone();
+        request.stream = Some(true);
+
+        let url = azure_responses_url(&self.endpoint, &self.api_version);
+        let request_builder = self.client.post(url).header("api-key", &self.api_key);
+        let response = send_stream(request_builder, &request).await?;
+        let stream = response
+            .bytes_stream()
+            .eventsource()
+            .filter_map(|event| async move {
+                match event {
+                    Ok(event) if event.data == "[DONE]" || event.data.is_empty() => None,
+                    Ok(event) => Some(serde_json::from_str(&event.data).map_err(ResponsesError::from)),
+                    Err(error) => Some(Err(ResponsesError::Internal(format!(
+                        "failed to parse SSE stream: {error}"
+                    )))),
+                }
+            });
+
+        Ok(Box::pin(stream))
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

@@ -1,13 +1,18 @@
 use super::token::measure_input_tokens;
-use super::{ContentPartInput, CreateResponseRequest, InputItem, ResponseInput, TextFormat};
+use super::{
+    ContentPartInput, CreateResponseRequest, InputItem, ResponseError, ResponseInput,
+    ResponseStreamEvent, TextFormat,
+};
 use crate::error::ErrorResponse;
 use crate::model::RequestModel;
 use crate::{ApiKey, AppConfig};
-use actix_web::web::{Data, Json};
+use actix_web::web::{Bytes, Data, Json};
 use actix_web::{HttpResponse, post};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
+use futures::StreamExt;
 use llm_responses::ProviderCapabilities;
 use llm_selector::{LlmSelector, Usage};
+use std::sync::Arc;
 use token_measure::TokenMeasure;
 use tracing::error;
 
@@ -25,10 +30,6 @@ pub(crate) async fn handle_create_response(
     }
 
     let request = request.into_inner();
-
-    if request.stream.unwrap_or(false) {
-        return ErrorResponse::feature_not_supported("streaming").into();
-    }
 
     if request.background.unwrap_or(false) || request.store.unwrap_or(false) {
         return ErrorResponse::feature_not_supported("background/store").into();
@@ -58,6 +59,10 @@ pub(crate) async fn handle_create_response(
         error!("append_usage failed: {e:?}");
     }
 
+    if request.stream.unwrap_or(false) {
+        return handle_streaming(provider, id, request, selector, usage).await;
+    }
+
     let result = provider.create_response(request).await;
 
     if let Err(e) = selector.remove_usage(&id, &usage).await {
@@ -72,6 +77,89 @@ pub(crate) async fn handle_create_response(
     response.ensure_output_text();
 
     HttpResponse::Ok().json(response)
+}
+
+async fn handle_streaming(
+    provider: Arc<dyn llm_responses::ResponsesProvider>,
+    client_id: String,
+    request: CreateResponseRequest,
+    selector: Data<LlmSelector>,
+    usage: Usage,
+) -> HttpResponse {
+    let stream = match provider.create_response_stream(request).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            if let Err(remove_error) = selector.remove_usage(&client_id, &usage).await {
+                error!("remove_usage failed: {remove_error:?}");
+            }
+            return ErrorResponse::from(error).into();
+        }
+    };
+
+    let selector_clone = selector.into_inner();
+    let id_clone = client_id.clone();
+    let mut usage_released = false;
+
+    let sse_stream = stream.map(move |item| {
+        let release_usage = |selector: Arc<LlmSelector>, id: String, usage: Usage| {
+            tokio::spawn(async move {
+                if let Err(error) = selector.remove_usage(&id, &usage).await {
+                    tracing::error!("remove_usage failed: {error:?}");
+                }
+            });
+        };
+
+        let mut event = match item {
+            Ok(event) => event,
+            Err(error) => {
+                if !usage_released {
+                    usage_released = true;
+                    release_usage(selector_clone.clone(), id_clone.clone(), usage.clone());
+                }
+                ResponseStreamEvent::Error {
+                    error: ResponseError::from_responses_error(&error),
+                }
+            }
+        };
+
+        if let Some(response) = event.response_mut() {
+            response.ayatori_client_id = id_clone.clone();
+            response.ensure_output_text();
+        }
+
+        if !usage_released
+            && matches!(
+                event,
+                ResponseStreamEvent::Completed { .. }
+                    | ResponseStreamEvent::Failed { .. }
+                    | ResponseStreamEvent::Incomplete { .. }
+                    | ResponseStreamEvent::Error { .. }
+            )
+        {
+            usage_released = true;
+            release_usage(selector_clone.clone(), id_clone.clone(), usage.clone());
+        }
+
+        let event_name = event.event_name();
+        let data = serde_json::to_string(&event).unwrap_or_else(|serialize_error| {
+            serde_json::json!({
+                "type": "error",
+                "error": {
+                    "code": "serialization_error",
+                    "message": serialize_error.to_string(),
+                }
+            })
+            .to_string()
+        });
+
+        Ok::<Bytes, actix_web::Error>(Bytes::from(format!("event: {event_name}\ndata: {data}\n\n")))
+    });
+
+    HttpResponse::Ok()
+        .content_type("text/event-stream")
+        .insert_header(("Cache-Control", "no-cache"))
+        .insert_header(("X-Accel-Buffering", "no"))
+        .streaming(sse_stream)
 }
 
 fn check_capabilities(

@@ -46,6 +46,27 @@ where
     serde_json::from_str(&body).map_err(ResponsesError::from)
 }
 
+pub(crate) async fn send_stream<T>(
+    request_builder: reqwest::RequestBuilder,
+    payload: &T,
+) -> Result<reqwest::Response, ResponsesError>
+where
+    T: Serialize + ?Sized,
+{
+    let response = request_builder.json(payload).send().await?;
+    let status = response.status();
+
+    if status.is_success() {
+        return Ok(response);
+    }
+
+    let body = response.text().await?;
+    Err(match status.as_u16() {
+        401 | 403 => ResponsesError::Authentication,
+        code => ResponsesError::Http { status: code, body },
+    })
+}
+
 pub(crate) fn openai_responses_url(endpoint: &str) -> String {
     let endpoint = endpoint.trim_end_matches('/');
     if endpoint.ends_with("/responses") {

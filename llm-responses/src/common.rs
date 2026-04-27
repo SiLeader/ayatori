@@ -167,6 +167,15 @@ pub(crate) fn make_response(
     }
 }
 
+pub(crate) fn make_in_progress_response(
+    request: &CreateResponseRequest,
+    model: String,
+) -> ResponseObject {
+    let mut response = make_response(request, model, vec![], None, None);
+    response.status = ResponseStatus::InProgress;
+    response
+}
+
 pub(crate) fn usage(
     input_tokens: u32,
     cached_tokens: Option<u32>,

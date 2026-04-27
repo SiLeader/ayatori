@@ -1,11 +1,11 @@
 use crate::common::{
     append_system_text, collect_text, function_call_output, function_tools, input_items,
-    make_response, message_output, parse_data_url_base64, parse_json_objectish, reasoning_output,
-    usage,
+    make_in_progress_response, make_response, message_output, new_id, parse_data_url_base64,
+    parse_json_objectish, reasoning_output, usage,
 };
 use crate::types::{
-    ContentPartInput, CreateResponseRequest, InputItem, MessageContentInput, ResponseObject,
-    TextFormat,
+    ContentPartInput, CreateResponseRequest, InputItem, MessageContentInput, OutputItem,
+    ResponseObject, ResponseStatus, ResponseStreamEvent, TextFormat,
 };
 use crate::{ProviderCapabilities, ResponsesError, ResponsesProvider};
 use async_trait::async_trait;
@@ -13,10 +13,14 @@ use configuration::{Credential, LlmProvider, LlmProviderType};
 use genai::adapter::AdapterKind;
 use genai::chat::{
     Binary, BinarySource, ChatMessage, ChatOptions, ChatRequest, ChatResponse, ChatResponseFormat,
-    ChatRole, ContentPart, JsonSpec, MessageContent, Tool, ToolCall, ToolResponse,
+    ChatRole, ChatStreamEvent, ContentPart, JsonSpec, MessageContent, Tool, ToolCall,
+    ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
+use futures::StreamExt;
+use futures::stream::BoxStream;
+use std::collections::HashMap;
 
 pub(crate) struct GenaiBackedProvider {
     client: Client,
@@ -72,6 +76,43 @@ impl ResponsesProvider for GenaiBackedProvider {
             .await
             .map_err(|error| ResponsesError::Internal(format!("genai: {error}")))?;
         Ok(from_genai_chat_response(&request, response))
+    }
+
+    async fn create_response_stream(
+        &self,
+        request: CreateResponseRequest,
+    ) -> Result<BoxStream<'static, Result<ResponseStreamEvent, ResponsesError>>, ResponsesError>
+    {
+        let chat_req = to_genai_chat_request(&request)?;
+        let chat_options = to_genai_chat_options(&request)?
+            .with_capture_usage(true)
+            .with_capture_content(true)
+            .with_capture_reasoning_content(true)
+            .with_capture_tool_calls(true);
+        let stream_res = self
+            .client
+            .exec_chat_stream(&self.model, chat_req, Some(&chat_options))
+            .await
+            .map_err(|error| ResponsesError::Internal(format!("genai: {error}")))?;
+
+        let mut mapper =
+            GenaiStreamMapper::new(stream_res.model_iden.model_name.to_string(), &request);
+        let stream = stream_res
+            .stream
+            .map(move |event| {
+                let events = match event {
+                    Ok(event) => mapper
+                        .handle(event)
+                        .into_iter()
+                        .map(Ok)
+                        .collect::<Vec<_>>(),
+                    Err(error) => vec![Err(ResponsesError::Internal(format!("genai: {error}")))],
+                };
+                futures::stream::iter(events)
+            })
+            .flatten();
+
+        Ok(Box::pin(stream))
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -323,6 +364,297 @@ fn from_genai_chat_response(
         )),
         None,
     )
+}
+
+struct GenaiStreamMapper {
+    response: ResponseObject,
+    started: bool,
+    message_output_index: Option<u32>,
+    reasoning_output_index: Option<u32>,
+    tool_calls: HashMap<String, u32>,
+}
+
+impl GenaiStreamMapper {
+    fn new(model: String, request: &CreateResponseRequest) -> Self {
+        Self {
+            response: make_in_progress_response(request, model),
+            started: false,
+            message_output_index: None,
+            reasoning_output_index: None,
+            tool_calls: HashMap::new(),
+        }
+    }
+
+    fn handle(&mut self, event: ChatStreamEvent) -> Vec<ResponseStreamEvent> {
+        match event {
+            ChatStreamEvent::Start => {
+                self.started = true;
+                vec![
+                    ResponseStreamEvent::Created {
+                        response: self.response.clone(),
+                    },
+                    ResponseStreamEvent::InProgress {
+                        response: self.response.clone(),
+                    },
+                ]
+            }
+            ChatStreamEvent::Chunk(chunk) => self.push_text_delta(chunk.content),
+            ChatStreamEvent::ReasoningChunk(chunk) => self.push_reasoning_delta(chunk.content),
+            ChatStreamEvent::ThoughtSignatureChunk(signature) => {
+                if let Some(output_index) = self.reasoning_output_index
+                    && let Some(OutputItem::Reasoning(reasoning)) =
+                        self.response.output.get_mut(output_index as usize)
+                {
+                    reasoning.encrypted_content = Some(signature.content);
+                }
+                Vec::new()
+            }
+            ChatStreamEvent::ToolCallChunk(chunk) => self.push_tool_call(chunk.tool_call),
+            ChatStreamEvent::End(end) => self.finish(end),
+        }
+    }
+
+    fn push_text_delta(&mut self, delta: String) -> Vec<ResponseStreamEvent> {
+        if delta.is_empty() {
+            return Vec::new();
+        }
+
+        let mut events = Vec::new();
+        let (output_index, item_id) = if let Some(output_index) = self.message_output_index {
+            let item_id = match self.response.output.get(output_index as usize) {
+                Some(OutputItem::Message(message)) => message.id.clone(),
+                _ => new_id("msg"),
+            };
+            (output_index, item_id)
+        } else {
+            let message = crate::types::OutputMessage {
+                id: new_id("msg"),
+                status: "in_progress".to_string(),
+                role: "assistant".to_string(),
+                content: vec![crate::types::ContentPartOutput::OutputText {
+                    text: String::new(),
+                    annotations: vec![],
+                }],
+            };
+            let output_index = self.response.output.len() as u32;
+            self.response.output.push(OutputItem::Message(message.clone()));
+            self.message_output_index = Some(output_index);
+            events.push(ResponseStreamEvent::OutputItemAdded {
+                output_index,
+                item: OutputItem::Message(message.clone()),
+            });
+            events.push(ResponseStreamEvent::ContentPartAdded {
+                item_id: message.id.clone(),
+                output_index,
+                content_index: 0,
+                part: crate::types::ContentPartOutput::OutputText {
+                    text: String::new(),
+                    annotations: vec![],
+                },
+            });
+            (output_index, message.id)
+        };
+
+        if let Some(OutputItem::Message(message)) = self.response.output.get_mut(output_index as usize)
+            && let Some(crate::types::ContentPartOutput::OutputText { text, .. }) =
+                message.content.get_mut(0)
+        {
+            text.push_str(&delta);
+        }
+
+        events.push(ResponseStreamEvent::OutputTextDelta {
+            item_id,
+            output_index,
+            content_index: 0,
+            delta,
+        });
+        events
+    }
+
+    fn push_reasoning_delta(&mut self, delta: String) -> Vec<ResponseStreamEvent> {
+        if delta.is_empty() {
+            return Vec::new();
+        }
+
+        let mut events = Vec::new();
+        let (output_index, item_id) = if let Some(output_index) = self.reasoning_output_index {
+            let item_id = match self.response.output.get(output_index as usize) {
+                Some(OutputItem::Reasoning(reasoning)) => reasoning.id.clone(),
+                _ => new_id("rs"),
+            };
+            (output_index, item_id)
+        } else {
+            let item = crate::types::ReasoningItem {
+                id: new_id("rs"),
+                summary: vec![crate::types::SummaryPart::Text {
+                    text: String::new(),
+                }],
+                encrypted_content: None,
+            };
+            let output_index = self.response.output.len() as u32;
+            self.response.output.push(OutputItem::Reasoning(item.clone()));
+            self.reasoning_output_index = Some(output_index);
+            events.push(ResponseStreamEvent::OutputItemAdded {
+                output_index,
+                item: OutputItem::Reasoning(item.clone()),
+            });
+            events.push(ResponseStreamEvent::ReasoningSummaryPartAdded {
+                item_id: item.id.clone(),
+                output_index,
+                summary_index: 0,
+                part: crate::types::SummaryPart::Text {
+                    text: String::new(),
+                },
+            });
+            (output_index, item.id)
+        };
+
+        if let Some(OutputItem::Reasoning(reasoning)) = self.response.output.get_mut(output_index as usize)
+            && let Some(crate::types::SummaryPart::Text { text }) = reasoning.summary.first_mut()
+        {
+            text.push_str(&delta);
+        }
+
+        events.push(ResponseStreamEvent::ReasoningSummaryTextDelta {
+            item_id,
+            output_index,
+            summary_index: 0,
+            delta,
+        });
+        events
+    }
+
+    fn push_tool_call(&mut self, tool_call: ToolCall) -> Vec<ResponseStreamEvent> {
+        if self.tool_calls.contains_key(&tool_call.call_id) {
+            return Vec::new();
+        }
+
+        let item = crate::types::FunctionCallItem {
+            id: new_id("fc"),
+            call_id: tool_call.call_id.clone(),
+            name: tool_call.fn_name.clone(),
+            arguments: tool_call.fn_arguments.to_string(),
+            status: "completed".to_string(),
+        };
+        let output_index = self.response.output.len() as u32;
+        self.response.output.push(OutputItem::FunctionCall(item.clone()));
+        self.tool_calls.insert(tool_call.call_id, output_index);
+
+        vec![
+            ResponseStreamEvent::OutputItemAdded {
+                output_index,
+                item: OutputItem::FunctionCall(item.clone()),
+            },
+            ResponseStreamEvent::FunctionCallArgumentsDone {
+                item_id: item.id.clone(),
+                output_index,
+                arguments: item.arguments.clone(),
+            },
+            ResponseStreamEvent::OutputItemDone {
+                output_index,
+                item: OutputItem::FunctionCall(item),
+            },
+        ]
+    }
+
+    fn finish(&mut self, end: genai::chat::StreamEnd) -> Vec<ResponseStreamEvent> {
+        let mut events = Vec::new();
+
+        if let Some(output_index) = self.message_output_index
+            && let Some(OutputItem::Message(message)) = self.response.output.get_mut(output_index as usize)
+            && message.status != "completed"
+        {
+            let part = message.content.first().cloned().unwrap_or(
+                crate::types::ContentPartOutput::OutputText {
+                    text: String::new(),
+                    annotations: vec![],
+                },
+            );
+            let text = match &part {
+                crate::types::ContentPartOutput::OutputText { text, .. } => text.clone(),
+                crate::types::ContentPartOutput::Refusal { refusal } => refusal.clone(),
+            };
+            message.status = "completed".to_string();
+            events.push(ResponseStreamEvent::OutputTextDone {
+                item_id: message.id.clone(),
+                output_index,
+                content_index: 0,
+                text,
+            });
+            events.push(ResponseStreamEvent::ContentPartDone {
+                item_id: message.id.clone(),
+                output_index,
+                content_index: 0,
+                part,
+            });
+            events.push(ResponseStreamEvent::OutputItemDone {
+                output_index,
+                item: OutputItem::Message(message.clone()),
+            });
+        }
+
+        if let Some(output_index) = self.reasoning_output_index {
+            let mut done_text = None;
+            if let Some(OutputItem::Reasoning(reasoning)) =
+                self.response.output.get(output_index as usize)
+            {
+                done_text = reasoning.summary.first().map(|part| match part {
+                    crate::types::SummaryPart::Text { text } => text.clone(),
+                });
+            }
+            let done_text = done_text.unwrap_or_default();
+            let item_id = self
+                .response
+                .output
+                .get(output_index as usize)
+                .and_then(|item| match item {
+                    OutputItem::Reasoning(reasoning) => Some(reasoning.id.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| new_id("rs"));
+            events.push(ResponseStreamEvent::ReasoningSummaryTextDone {
+                item_id: item_id.clone(),
+                output_index,
+                summary_index: 0,
+                text: done_text.clone(),
+            });
+            events.push(ResponseStreamEvent::ReasoningSummaryPartDone {
+                item_id: item_id.clone(),
+                output_index,
+                summary_index: 0,
+                part: crate::types::SummaryPart::Text { text: done_text },
+            });
+            if let Some(item) = self.response.output.get(output_index as usize).cloned() {
+                events.push(ResponseStreamEvent::OutputItemDone { output_index, item });
+            }
+        }
+
+        if let Some(stream_usage) = end.captured_usage {
+            let input_tokens = stream_usage.prompt_tokens.unwrap_or_default().max(0) as u32;
+            let output_tokens = stream_usage.completion_tokens.unwrap_or_default().max(0) as u32;
+            let cached_tokens = stream_usage
+                .prompt_tokens_details
+                .and_then(|details| details.cached_tokens)
+                .and_then(|value| u32::try_from(value).ok());
+            let reasoning_tokens = stream_usage
+                .completion_tokens_details
+                .and_then(|details| details.reasoning_tokens)
+                .and_then(|value| u32::try_from(value).ok());
+            self.response.usage = Some(usage(
+                input_tokens,
+                cached_tokens,
+                output_tokens,
+                reasoning_tokens,
+            ));
+        }
+
+        self.response.status = ResponseStatus::Completed;
+        self.response.ensure_output_text();
+        events.push(ResponseStreamEvent::Completed {
+            response: self.response.clone(),
+        });
+        events
+    }
 }
 
 #[cfg(test)]

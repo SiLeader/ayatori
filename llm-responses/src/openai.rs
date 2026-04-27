@@ -1,8 +1,11 @@
-use crate::http::{openai_responses_url, send_json};
-use crate::types::{CreateResponseRequest, ResponseObject};
+use crate::http::{openai_responses_url, send_json, send_stream};
+use crate::types::{CreateResponseRequest, ResponseObject, ResponseStreamEvent};
 use crate::{ProviderCapabilities, ResponsesError, ResponsesProvider};
 use async_trait::async_trait;
 use configuration::{Credential, LlmProvider, LlmProviderType};
+use eventsource_stream::Eventsource;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 
 enum Auth {
     Bearer(String),
@@ -51,6 +54,37 @@ impl ResponsesProvider for OpenAiResponsesProvider {
         };
 
         send_json(request_builder, &request).await
+    }
+
+    async fn create_response_stream(
+        &self,
+        mut request: CreateResponseRequest,
+    ) -> Result<BoxStream<'static, Result<ResponseStreamEvent, ResponsesError>>, ResponsesError>
+    {
+        request.model = self.model.clone();
+        request.stream = Some(true);
+
+        let url = openai_responses_url(&self.endpoint);
+        let request_builder = match &self.auth {
+            Auth::Bearer(api_key) => self.client.post(url).bearer_auth(api_key),
+            Auth::None => self.client.post(url),
+        };
+
+        let response = send_stream(request_builder, &request).await?;
+        let stream = response
+            .bytes_stream()
+            .eventsource()
+            .filter_map(|event| async move {
+                match event {
+                    Ok(event) if event.data == "[DONE]" || event.data.is_empty() => None,
+                    Ok(event) => Some(serde_json::from_str(&event.data).map_err(ResponsesError::from)),
+                    Err(error) => Some(Err(ResponsesError::Internal(format!(
+                        "failed to parse SSE stream: {error}"
+                    )))),
+                }
+            });
+
+        Ok(Box::pin(stream))
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

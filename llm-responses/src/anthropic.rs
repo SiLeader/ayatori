@@ -1,16 +1,22 @@
+mod stream;
+
+use self::stream::{AnthropicStreamMapper, AnthropicStreamPayload};
 use crate::common::{
     append_system_text, collect_text, function_call_output, function_tools,
     incomplete_for_max_tokens, input_items, make_response, parse_data_url_base64,
     parse_json_objectish, reasoning_budget, reasoning_output, tool_choice_mode, usage,
 };
-use crate::http::send_value;
+use crate::http::{send_stream, send_value};
 use crate::types::{
     ContentPartInput, CreateResponseRequest, InputItem, MessageContentInput, ResponseObject,
-    ToolChoice,
+    ResponseStreamEvent, ToolChoice,
 };
 use crate::{ProviderCapabilities, ResponsesError, ResponsesProvider};
 use async_trait::async_trait;
 use configuration::{Credential, LlmProvider};
+use eventsource_stream::Eventsource;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use serde_json::{Value, json};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -56,6 +62,50 @@ impl ResponsesProvider for AnthropicResponsesProvider {
         .await?;
 
         from_anthropic_response(&request, body)
+    }
+
+    async fn create_response_stream(
+        &self,
+        request: CreateResponseRequest,
+    ) -> Result<BoxStream<'static, Result<ResponseStreamEvent, ResponsesError>>, ResponsesError>
+    {
+        let mut payload = to_anthropic_request(&request, &self.model)?;
+        payload["stream"] = json!(true);
+
+        let url = format!("{}/v1/messages", self.endpoint.trim_end_matches('/'));
+        let response = send_stream(
+            self.client
+                .post(url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION),
+            &payload,
+        )
+        .await?;
+
+        let mut mapper = AnthropicStreamMapper::new(self.model.clone(), &request);
+        let stream = response
+            .bytes_stream()
+            .eventsource()
+            .map(move |event| {
+                let events = match event {
+                    Ok(event) if event.data.is_empty() => Vec::new(),
+                    Ok(event) => match serde_json::from_str::<AnthropicStreamPayload>(&event.data) {
+                        Ok(payload) => mapper
+                            .handle(payload)
+                            .into_iter()
+                            .map(Ok)
+                            .collect::<Vec<_>>(),
+                        Err(error) => vec![Err(ResponsesError::Serde(error))],
+                    },
+                    Err(error) => vec![Err(ResponsesError::Internal(format!(
+                        "failed to parse SSE stream: {error}"
+                    )))],
+                };
+                futures::stream::iter(events)
+            })
+            .flatten();
+
+        Ok(Box::pin(stream))
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

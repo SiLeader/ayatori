@@ -1,18 +1,24 @@
 use crate::common::{
     append_system_text, collect_text, function_call_output, function_tools,
-    incomplete_for_max_tokens, input_items, make_response, parse_data_url_base64,
+    incomplete_for_max_tokens, input_items, make_in_progress_response, make_response, new_id,
+    parse_data_url_base64,
     parse_json_objectish, parse_json_string, reasoning_budget, reasoning_output, response_format,
     tool_call_id, tool_choice_mode, tool_name_from_call_id, usage,
 };
-use crate::http::send_value;
+use crate::http::{send_stream, send_value};
 use crate::types::{
-    ContentPartInput, CreateResponseRequest, InputItem, MessageContentInput, ResponseObject,
-    ToolChoice,
+    ContentPartInput, CreateResponseRequest, InputItem, MessageContentInput, OutputItem,
+    ResponseObject, ResponseStatus, ResponseStreamEvent, ToolChoice,
 };
 use crate::{ProviderCapabilities, ResponsesError, ResponsesProvider};
 use async_trait::async_trait;
 use configuration::{Credential, LlmProvider};
+use eventsource_stream::Eventsource;
+use futures::StreamExt;
+use futures::stream::BoxStream;
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 
 pub(crate) struct VertexAiResponsesProvider {
     client: reqwest::Client,
@@ -58,6 +64,51 @@ impl ResponsesProvider for VertexAiResponsesProvider {
         );
         let body = send_value(self.client.post(url), &payload).await?;
         from_vertex_response(&request, body)
+    }
+
+    async fn create_response_stream(
+        &self,
+        request: CreateResponseRequest,
+    ) -> Result<BoxStream<'static, Result<ResponseStreamEvent, ResponsesError>>, ResponsesError>
+    {
+        let payload = to_vertex_request(&request)?;
+        let model_path = if self.model.starts_with("publishers/") || self.model.starts_with("projects/")
+        {
+            self.model.clone()
+        } else {
+            format!("models/{}", self.model)
+        };
+        let url = format!(
+            "{}/v1/{}:streamGenerateContent?alt=sse&key={}",
+            self.endpoint.trim_end_matches('/'),
+            model_path,
+            self.api_key
+        );
+        let response = send_stream(self.client.post(url), &payload).await?;
+        let mut mapper = VertexStreamMapper::new(self.model.clone(), &request);
+        let stream = response
+            .bytes_stream()
+            .eventsource()
+            .map(move |event| {
+                let events = match event {
+                    Ok(event) if event.data == "[DONE]" || event.data.is_empty() => Vec::new(),
+                    Ok(event) => match serde_json::from_str::<VertexStreamChunk>(&event.data) {
+                        Ok(chunk) => mapper
+                            .handle(chunk)
+                            .into_iter()
+                            .map(Ok)
+                            .collect::<Vec<_>>(),
+                        Err(error) => vec![Err(ResponsesError::Serde(error))],
+                    },
+                    Err(error) => vec![Err(ResponsesError::Internal(format!(
+                        "failed to parse SSE stream: {error}"
+                    )))],
+                };
+                futures::stream::iter(events)
+            })
+            .flatten();
+
+        Ok(Box::pin(stream))
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -432,6 +483,332 @@ fn from_vertex_response(
         response.id = id;
     }
     Ok(response)
+}
+
+struct VertexStreamMapper {
+    response: ResponseObject,
+    started: bool,
+    message_output_index: Option<u32>,
+    tool_calls: HashMap<String, u32>,
+}
+
+impl VertexStreamMapper {
+    fn new(model: String, request: &CreateResponseRequest) -> Self {
+        Self {
+            response: make_in_progress_response(request, model),
+            started: false,
+            message_output_index: None,
+            tool_calls: HashMap::new(),
+        }
+    }
+
+    fn handle(&mut self, chunk: VertexStreamChunk) -> Vec<ResponseStreamEvent> {
+        if let Some(response_id) = chunk.response_id {
+            self.response.id = response_id;
+        }
+        if let Some(model) = chunk.model_version.or(chunk.model) {
+            self.response.model = model;
+        }
+        if let Some(usage_metadata) = chunk.usage_metadata {
+            self.response.usage = Some(usage(
+                usage_metadata.prompt_token_count.unwrap_or_default(),
+                None,
+                usage_metadata.candidates_token_count.unwrap_or_default()
+                    + usage_metadata.thoughts_token_count.unwrap_or_default(),
+                usage_metadata.thoughts_token_count,
+            ));
+        }
+
+        let mut events = Vec::new();
+        if !self.started {
+            self.started = true;
+            events.push(ResponseStreamEvent::Created {
+                response: self.response.clone(),
+            });
+            events.push(ResponseStreamEvent::InProgress {
+                response: self.response.clone(),
+            });
+        }
+
+        for candidate in chunk.candidates {
+            if let Some(content) = candidate.content {
+                for (part_index, part) in content.parts.into_iter().enumerate() {
+                    if let Some(text) = part.text {
+                        if part.thought.unwrap_or(false) {
+                            continue;
+                        }
+                        events.extend(self.push_text_delta(text));
+                    }
+                    if let Some(function_call) = part.function_call {
+                        events.extend(self.push_function_call(part_index, function_call));
+                    }
+                }
+            }
+
+            if let Some(finish_reason) = candidate.finish_reason {
+                events.extend(self.finish(&finish_reason));
+            }
+        }
+
+        events
+    }
+
+    fn push_text_delta(&mut self, delta: String) -> Vec<ResponseStreamEvent> {
+        if delta.is_empty() {
+            return Vec::new();
+        }
+
+        let mut events = Vec::new();
+        let (output_index, item_id, content_index) = if let Some(output_index) = self.message_output_index {
+            let item_id = match self.response.output.get(output_index as usize) {
+                Some(OutputItem::Message(message)) => message.id.clone(),
+                _ => new_id("msg"),
+            };
+            (output_index, item_id, 0)
+        } else {
+            let message = crate::types::OutputMessage {
+                id: new_id("msg"),
+                status: "in_progress".to_string(),
+                role: "assistant".to_string(),
+                content: vec![crate::types::ContentPartOutput::OutputText {
+                    text: String::new(),
+                    annotations: vec![],
+                }],
+            };
+            let output_index = self.response.output.len() as u32;
+            self.response.output.push(OutputItem::Message(message.clone()));
+            self.message_output_index = Some(output_index);
+            events.push(ResponseStreamEvent::OutputItemAdded {
+                output_index,
+                item: OutputItem::Message(message.clone()),
+            });
+            events.push(ResponseStreamEvent::ContentPartAdded {
+                item_id: message.id.clone(),
+                output_index,
+                content_index: 0,
+                part: crate::types::ContentPartOutput::OutputText {
+                    text: String::new(),
+                    annotations: vec![],
+                },
+            });
+            (output_index, message.id, 0)
+        };
+
+        if let Some(OutputItem::Message(message)) = self.response.output.get_mut(output_index as usize)
+            && let Some(crate::types::ContentPartOutput::OutputText { text, .. }) =
+                message.content.get_mut(content_index as usize)
+        {
+            text.push_str(&delta);
+        }
+
+        events.push(ResponseStreamEvent::OutputTextDelta {
+            item_id,
+            output_index,
+            content_index,
+            delta,
+        });
+        events
+    }
+
+    fn push_function_call(
+        &mut self,
+        part_index: usize,
+        function_call: VertexFunctionCall,
+    ) -> Vec<ResponseStreamEvent> {
+        let call_id = tool_call_id(&function_call.name, part_index);
+        let arguments = function_call.args.unwrap_or(Value::Object(Map::new())).to_string();
+
+        if let Some(output_index) = self.tool_calls.get(&call_id).copied() {
+            let mut delta = arguments.clone();
+            if let Some(OutputItem::FunctionCall(call)) =
+                self.response.output.get_mut(output_index as usize)
+            {
+                if arguments.starts_with(&call.arguments) {
+                    delta = arguments[call.arguments.len()..].to_string();
+                }
+                call.arguments = arguments.clone();
+            }
+            if delta.is_empty() {
+                return Vec::new();
+            }
+            return vec![ResponseStreamEvent::FunctionCallArgumentsDelta {
+                item_id: self
+                    .response
+                    .output
+                    .get(output_index as usize)
+                    .and_then(|item| match item {
+                        OutputItem::FunctionCall(call) => Some(call.id.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| new_id("fc")),
+                output_index,
+                delta,
+            }];
+        }
+
+        let item = crate::types::FunctionCallItem {
+            id: new_id("fc"),
+            call_id: call_id.clone(),
+            name: function_call.name,
+            arguments: arguments.clone(),
+            status: "in_progress".to_string(),
+        };
+        let output_index = self.response.output.len() as u32;
+        self.response
+            .output
+            .push(OutputItem::FunctionCall(item.clone()));
+        self.tool_calls.insert(call_id, output_index);
+
+        let mut events = vec![ResponseStreamEvent::OutputItemAdded {
+            output_index,
+            item: OutputItem::FunctionCall(item.clone()),
+        }];
+        if !arguments.is_empty() {
+            events.push(ResponseStreamEvent::FunctionCallArgumentsDelta {
+                item_id: item.id,
+                output_index,
+                delta: arguments,
+            });
+        }
+        events
+    }
+
+    fn finish(&mut self, finish_reason: &str) -> Vec<ResponseStreamEvent> {
+        let mut events = Vec::new();
+
+        if let Some(output_index) = self.message_output_index
+            && let Some(OutputItem::Message(message)) = self.response.output.get_mut(output_index as usize)
+            && message.status != "completed"
+        {
+            let part = message.content.first().cloned().unwrap_or(
+                crate::types::ContentPartOutput::OutputText {
+                    text: String::new(),
+                    annotations: vec![],
+                },
+            );
+            let text = match &part {
+                crate::types::ContentPartOutput::OutputText { text, .. } => text.clone(),
+                crate::types::ContentPartOutput::Refusal { refusal } => refusal.clone(),
+            };
+            message.status = "completed".to_string();
+            events.push(ResponseStreamEvent::OutputTextDone {
+                item_id: message.id.clone(),
+                output_index,
+                content_index: 0,
+                text,
+            });
+            events.push(ResponseStreamEvent::ContentPartDone {
+                item_id: message.id.clone(),
+                output_index,
+                content_index: 0,
+                part,
+            });
+            events.push(ResponseStreamEvent::OutputItemDone {
+                output_index,
+                item: OutputItem::Message(message.clone()),
+            });
+        }
+
+        for output_index in self.tool_calls.values().copied().collect::<Vec<_>>() {
+            if let Some(OutputItem::FunctionCall(call)) =
+                self.response.output.get_mut(output_index as usize)
+                && call.status != "completed"
+            {
+                call.status = "completed".to_string();
+                events.push(ResponseStreamEvent::FunctionCallArgumentsDone {
+                    item_id: call.id.clone(),
+                    output_index,
+                    arguments: call.arguments.clone(),
+                });
+                events.push(ResponseStreamEvent::OutputItemDone {
+                    output_index,
+                    item: OutputItem::FunctionCall(call.clone()),
+                });
+            }
+        }
+
+        self.response.incomplete_details = incomplete_for_max_tokens(Some(finish_reason));
+        self.response.status = if self.response.incomplete_details.is_some() {
+            ResponseStatus::Incomplete
+        } else {
+            ResponseStatus::Completed
+        };
+        self.response.ensure_output_text();
+
+        events.push(if self.response.incomplete_details.is_some() {
+            ResponseStreamEvent::Incomplete {
+                response: self.response.clone(),
+            }
+        } else {
+            ResponseStreamEvent::Completed {
+                response: self.response.clone(),
+            }
+        });
+        events
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct VertexStreamChunk {
+    #[serde(rename = "responseId")]
+    #[serde(default)]
+    response_id: Option<String>,
+    #[serde(rename = "modelVersion")]
+    #[serde(default)]
+    model_version: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(rename = "usageMetadata")]
+    #[serde(default)]
+    usage_metadata: Option<VertexUsageMetadata>,
+    #[serde(default)]
+    candidates: Vec<VertexCandidate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VertexUsageMetadata {
+    #[serde(rename = "promptTokenCount")]
+    #[serde(default)]
+    prompt_token_count: Option<u32>,
+    #[serde(rename = "candidatesTokenCount")]
+    #[serde(default)]
+    candidates_token_count: Option<u32>,
+    #[serde(rename = "thoughtsTokenCount")]
+    #[serde(default)]
+    thoughts_token_count: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VertexCandidate {
+    #[serde(rename = "finishReason")]
+    #[serde(default)]
+    finish_reason: Option<String>,
+    #[serde(default)]
+    content: Option<VertexContent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VertexContent {
+    #[serde(default)]
+    parts: Vec<VertexPart>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VertexPart {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    thought: Option<bool>,
+    #[serde(rename = "functionCall")]
+    #[serde(default)]
+    function_call: Option<VertexFunctionCall>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VertexFunctionCall {
+    name: String,
+    #[serde(default)]
+    args: Option<Value>,
 }
 
 #[cfg(test)]

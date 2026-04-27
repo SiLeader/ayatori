@@ -268,6 +268,45 @@ pub struct ResponseError {
     pub message: String,
 }
 
+impl ResponseError {
+    pub fn from_responses_error(error: &crate::ResponsesError) -> Self {
+        match error {
+            crate::ResponsesError::Http { status, body } => Self {
+                code: format!("http_{status}"),
+                message: body.clone(),
+            },
+            crate::ResponsesError::Transport(error) => Self {
+                code: "transport_error".to_string(),
+                message: error.to_string(),
+            },
+            crate::ResponsesError::Serde(error) => Self {
+                code: "serde_error".to_string(),
+                message: error.to_string(),
+            },
+            crate::ResponsesError::Unsupported(feature) => Self {
+                code: "unsupported".to_string(),
+                message: format!("Feature not supported: {feature}"),
+            },
+            crate::ResponsesError::InvalidRequest(message) => Self {
+                code: "invalid_request".to_string(),
+                message: message.clone(),
+            },
+            crate::ResponsesError::MalformedResponse(message) => Self {
+                code: "malformed_response".to_string(),
+                message: message.clone(),
+            },
+            crate::ResponsesError::Authentication => Self {
+                code: "authentication_error".to_string(),
+                message: "Invalid authentication".to_string(),
+            },
+            crate::ResponsesError::Internal(message) => Self {
+                code: "internal_error".to_string(),
+                message: message.clone(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncompleteDetails {
     pub reason: String,
@@ -327,9 +366,223 @@ pub enum TextFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResponseStreamEvent {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    #[serde(flatten)]
-    pub event: serde_json::Value,
+#[serde(tag = "type")]
+pub enum ResponseStreamEvent {
+    #[serde(rename = "response.created")]
+    Created { response: ResponseObject },
+
+    #[serde(rename = "response.in_progress")]
+    InProgress { response: ResponseObject },
+
+    #[serde(rename = "response.output_item.added")]
+    OutputItemAdded { output_index: u32, item: OutputItem },
+
+    #[serde(rename = "response.output_item.done")]
+    OutputItemDone { output_index: u32, item: OutputItem },
+
+    #[serde(rename = "response.content_part.added")]
+    ContentPartAdded {
+        item_id: String,
+        output_index: u32,
+        content_index: u32,
+        part: ContentPartOutput,
+    },
+
+    #[serde(rename = "response.content_part.done")]
+    ContentPartDone {
+        item_id: String,
+        output_index: u32,
+        content_index: u32,
+        part: ContentPartOutput,
+    },
+
+    #[serde(rename = "response.output_text.delta")]
+    OutputTextDelta {
+        item_id: String,
+        output_index: u32,
+        content_index: u32,
+        delta: String,
+    },
+
+    #[serde(rename = "response.output_text.done")]
+    OutputTextDone {
+        item_id: String,
+        output_index: u32,
+        content_index: u32,
+        text: String,
+    },
+
+    #[serde(rename = "response.refusal.delta")]
+    RefusalDelta {
+        item_id: String,
+        output_index: u32,
+        content_index: u32,
+        delta: String,
+    },
+
+    #[serde(rename = "response.refusal.done")]
+    RefusalDone {
+        item_id: String,
+        output_index: u32,
+        content_index: u32,
+        refusal: String,
+    },
+
+    #[serde(rename = "response.function_call_arguments.delta")]
+    FunctionCallArgumentsDelta {
+        item_id: String,
+        output_index: u32,
+        delta: String,
+    },
+
+    #[serde(rename = "response.function_call_arguments.done")]
+    FunctionCallArgumentsDone {
+        item_id: String,
+        output_index: u32,
+        arguments: String,
+    },
+
+    #[serde(rename = "response.reasoning_summary_part.added")]
+    ReasoningSummaryPartAdded {
+        item_id: String,
+        output_index: u32,
+        summary_index: u32,
+        part: SummaryPart,
+    },
+
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ReasoningSummaryTextDelta {
+        item_id: String,
+        output_index: u32,
+        summary_index: u32,
+        delta: String,
+    },
+
+    #[serde(rename = "response.reasoning_summary_text.done")]
+    ReasoningSummaryTextDone {
+        item_id: String,
+        output_index: u32,
+        summary_index: u32,
+        text: String,
+    },
+
+    #[serde(rename = "response.reasoning_summary_part.done")]
+    ReasoningSummaryPartDone {
+        item_id: String,
+        output_index: u32,
+        summary_index: u32,
+        part: SummaryPart,
+    },
+
+    #[serde(rename = "response.completed")]
+    Completed { response: ResponseObject },
+
+    #[serde(rename = "response.failed")]
+    Failed { response: ResponseObject },
+
+    #[serde(rename = "response.incomplete")]
+    Incomplete { response: ResponseObject },
+
+    #[serde(rename = "error")]
+    Error { error: ResponseError },
+}
+
+impl ResponseStreamEvent {
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            Self::Created { .. } => "response.created",
+            Self::InProgress { .. } => "response.in_progress",
+            Self::OutputItemAdded { .. } => "response.output_item.added",
+            Self::OutputItemDone { .. } => "response.output_item.done",
+            Self::ContentPartAdded { .. } => "response.content_part.added",
+            Self::ContentPartDone { .. } => "response.content_part.done",
+            Self::OutputTextDelta { .. } => "response.output_text.delta",
+            Self::OutputTextDone { .. } => "response.output_text.done",
+            Self::RefusalDelta { .. } => "response.refusal.delta",
+            Self::RefusalDone { .. } => "response.refusal.done",
+            Self::FunctionCallArgumentsDelta { .. } => "response.function_call_arguments.delta",
+            Self::FunctionCallArgumentsDone { .. } => "response.function_call_arguments.done",
+            Self::ReasoningSummaryPartAdded { .. } => "response.reasoning_summary_part.added",
+            Self::ReasoningSummaryTextDelta { .. } => "response.reasoning_summary_text.delta",
+            Self::ReasoningSummaryTextDone { .. } => "response.reasoning_summary_text.done",
+            Self::ReasoningSummaryPartDone { .. } => "response.reasoning_summary_part.done",
+            Self::Completed { .. } => "response.completed",
+            Self::Failed { .. } => "response.failed",
+            Self::Incomplete { .. } => "response.incomplete",
+            Self::Error { .. } => "error",
+        }
+    }
+
+    pub fn response_mut(&mut self) -> Option<&mut ResponseObject> {
+        match self {
+            Self::Created { response }
+            | Self::InProgress { response }
+            | Self::Completed { response }
+            | Self::Failed { response }
+            | Self::Incomplete { response } => Some(response),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ContentPartOutput, OutputItem, OutputMessage, ResponseObject, ResponseStatus,
+        ResponseStreamEvent,
+    };
+
+    fn response() -> ResponseObject {
+        ResponseObject {
+            id: "resp_123".to_string(),
+            object: "response".to_string(),
+            created_at: 1,
+            status: ResponseStatus::InProgress,
+            model: "gpt-test".to_string(),
+            output: vec![OutputItem::Message(OutputMessage {
+                id: "msg_123".to_string(),
+                status: "in_progress".to_string(),
+                role: "assistant".to_string(),
+                content: vec![ContentPartOutput::OutputText {
+                    text: String::new(),
+                    annotations: vec![],
+                }],
+            })],
+            output_text: None,
+            usage: None,
+            error: None,
+            incomplete_details: None,
+            previous_response_id: None,
+            metadata: None,
+            parallel_tool_calls: None,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            reasoning: None,
+            text: None,
+            tool_choice: None,
+            tools: None,
+            truncation: None,
+            user: None,
+            ayatori_client_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn response_stream_event_round_trips() {
+        let event = ResponseStreamEvent::Created {
+            response: response(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: ResponseStreamEvent = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.event_name(), "response.created");
+        match restored {
+            ResponseStreamEvent::Created { response } => {
+                assert_eq!(response.id, "resp_123");
+                assert_eq!(response.model, "gpt-test");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
 }

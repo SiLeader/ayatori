@@ -148,12 +148,45 @@ fn message_response(text: &str) -> Value {
     })
 }
 
+fn parse_sse_events(body: &[u8]) -> Vec<(String, Value)> {
+    String::from_utf8_lossy(body)
+        .split("\n\n")
+        .filter(|chunk| !chunk.trim().is_empty())
+        .map(|chunk| {
+            let mut event = String::new();
+            let mut data = String::new();
+            for line in chunk.lines() {
+                if let Some(value) = line.strip_prefix("event: ") {
+                    event = value.to_string();
+                } else if let Some(value) = line.strip_prefix("data: ") {
+                    data.push_str(value);
+                }
+            }
+            (event, serde_json::from_str(&data).unwrap())
+        })
+        .collect()
+}
+
 async fn mount_openai_mock(server: &MockServer, expected_body: Value, response_body: Value) {
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .and(header("authorization", "Bearer test-key"))
         .and(body_json(expected_body))
         .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+        .mount(server)
+        .await;
+}
+
+async fn mount_openai_stream_mock(server: &MockServer, expected_body: Value, response_body: &str) {
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", "Bearer test-key"))
+        .and(body_json(expected_body))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(response_body),
+        )
         .mount(server)
         .await;
 }
@@ -196,6 +229,80 @@ async fn post_responses_returns_provider_response() {
     assert_eq!(body["id"], "resp_upstream");
     assert_eq!(body["output_text"], "hello from upstream");
     assert_eq!(body["ayatori_client_id"], "stub-model");
+}
+
+#[actix_web::test]
+async fn post_responses_streams_openai_events() {
+    let mock_server = MockServer::start().await;
+    let upstream_stream = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"gpt-4.1-mini\",\"output\":[]}}\n\n",
+        "event: response.in_progress\n",
+        "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_stream\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"gpt-4.1-mini\",\"output\":[]}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_stream\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}]}}\n\n",
+        "event: response.content_part.added\n",
+        "data: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_stream\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stream\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello stream\"}\n\n",
+        "event: response.output_text.done\n",
+        "data: {\"type\":\"response.output_text.done\",\"item_id\":\"msg_stream\",\"output_index\":0,\"content_index\":0,\"text\":\"hello stream\"}\n\n",
+        "event: response.content_part.done\n",
+        "data: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_stream\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"hello stream\",\"annotations\":[]}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_stream\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello stream\",\"annotations\":[]}]}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-4.1-mini\",\"output\":[{\"type\":\"message\",\"id\":\"msg_stream\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello stream\",\"annotations\":[]}]}],\"output_text\":\"hello stream\"}}\n\n"
+    );
+    mount_openai_stream_mock(
+        &mock_server,
+        json!({
+            "model": "gpt-4.1-mini",
+            "input": "hello",
+            "stream": true
+        }),
+        upstream_stream,
+    )
+    .await;
+
+    let app = build_app(
+        vec![provider(
+            "stub-model",
+            true,
+            "gpt-4.1-mini",
+            vec!["test"],
+            0,
+            mock_server.uri(),
+        )],
+        None,
+        true,
+    )
+    .await;
+    let req = test::TestRequest::post()
+        .uri("/v1/responses")
+        .set_json(json!({
+            "model": "gpt-4.1-mini",
+            "input": "hello",
+            "stream": true
+        }))
+        .to_request();
+
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "text/event-stream"
+    );
+
+    let events = parse_sse_events(&test::read_body(resp).await);
+    assert_eq!(events[0].0, "response.created");
+    assert_eq!(events[0].1["response"]["ayatori_client_id"], "stub-model");
+    assert_eq!(events[4].0, "response.output_text.delta");
+    assert_eq!(events[4].1["delta"], "hello stream");
+    let completed = events.last().unwrap();
+    assert_eq!(completed.0, "response.completed");
+    assert_eq!(completed.1["response"]["output_text"], "hello stream");
+    assert_eq!(completed.1["response"]["ayatori_client_id"], "stub-model");
 }
 
 #[actix_web::test]
