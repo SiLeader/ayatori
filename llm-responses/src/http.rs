@@ -1,6 +1,7 @@
 use crate::ResponsesError;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 pub(crate) async fn send_json<T, R>(
     request_builder: reqwest::RequestBuilder,
@@ -9,6 +10,27 @@ pub(crate) async fn send_json<T, R>(
 where
     T: Serialize + ?Sized,
     R: DeserializeOwned,
+{
+    let response = request_builder.json(payload).send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+
+    if !status.is_success() {
+        return Err(match status.as_u16() {
+            401 | 403 => ResponsesError::Authentication,
+            code => ResponsesError::Http { status: code, body },
+        });
+    }
+
+    serde_json::from_str(&body).map_err(ResponsesError::from)
+}
+
+pub(crate) async fn send_value<T>(
+    request_builder: reqwest::RequestBuilder,
+    payload: &T,
+) -> Result<Value, ResponsesError>
+where
+    T: Serialize + ?Sized,
 {
     let response = request_builder.json(payload).send().await?;
     let status = response.status();

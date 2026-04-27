@@ -1,5 +1,8 @@
+use crate::anthropic::AnthropicResponsesProvider;
 use crate::azure::AzureOpenAiResponsesProvider;
+use crate::ollama::GenaiBackedProvider;
 use crate::openai::OpenAiResponsesProvider;
+use crate::vertexai::VertexAiResponsesProvider;
 use crate::{ResponsesError, ResponsesProvider};
 use configuration::{Configuration, Credential, LlmProvider, LlmProviderType};
 use std::collections::HashMap;
@@ -54,13 +57,17 @@ impl LlmResponsesComposer {
 fn build_provider(provider: LlmProvider, credential: Credential) -> Arc<dyn ResponsesProvider> {
     let provider_type = provider.provider_type.clone();
     match provider_type {
-        LlmProviderType::OpenAI | LlmProviderType::Ollama => {
-            Arc::new(OpenAiResponsesProvider::new(provider, credential))
-        }
+        LlmProviderType::OpenAI => Arc::new(OpenAiResponsesProvider::new(provider, credential)),
         LlmProviderType::Azure => Arc::new(AzureOpenAiResponsesProvider::new(provider, credential)),
-        LlmProviderType::Anthropic | LlmProviderType::VertexAI | LlmProviderType::Bedrock => {
-            Arc::new(UnsupportedProvider::new(provider_type))
+        LlmProviderType::Anthropic => {
+            Arc::new(AnthropicResponsesProvider::new(provider, credential))
         }
+        LlmProviderType::VertexAI => Arc::new(VertexAiResponsesProvider::new(provider, credential)),
+        LlmProviderType::Ollama => Arc::new(
+            GenaiBackedProvider::new(provider.clone(), credential)
+                .with_model(provider.model.clone()),
+        ),
+        LlmProviderType::Bedrock => Arc::new(UnsupportedProvider::new(provider_type)),
     }
 }
 
@@ -91,10 +98,10 @@ impl ResponsesProvider for UnsupportedProvider {
         Err(ResponsesError::Unsupported(match provider {
             "azure" => "azure provider is not configured for responses",
             "bedrock" => "bedrock provider is not implemented yet",
-            "anthropic" => "anthropic provider is not implemented yet",
+            "anthropic" => "anthropic provider is not configured for responses",
             "ollama" => "ollama provider is not configured for responses",
             "openai" => "openai provider is not configured for responses",
-            "vertex_ai" => "vertex_ai provider is not implemented yet",
+            "vertex_ai" => "vertex_ai provider is not configured for responses",
             _ => "provider is not implemented yet",
         }))
     }
