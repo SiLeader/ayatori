@@ -8,7 +8,7 @@ and priorities.
 - **OpenAI-like API** - Drop-in replacement for OpenAI API like endpoints
 - **Multi-Provider Support** - Anthropic, OpenAI, Azure OpenAI, Ollama, VertexAI
 - **Intelligent Routing** - Route requests based on:
-    - Tags (e.g., "fast", "cheap", "summarize")
+    - Tags (e.g., "fast", "cheap", "summarize") with include/exclude support
     - Model names
     - Provider IDs
     - Usage capacity limits
@@ -212,28 +212,54 @@ Select providers matching ALL specified tags (AND logic):
 ```json
 {
   "model": "tags:fast&cheap",
-  "messages": [
-    ...
-  ]
+  "messages": [...]
 }
 ```
 
-Or use singular form:
+Or use the singular alias `tag:`:
 
 ```json
 {
   "model": "tag:smart&local",
-  "messages": [
-    ...
-  ]
+  "messages": [...]
+}
+```
+
+**Exclude tags** — prefix a tag with `!` to skip providers that carry it:
+
+```json
+{
+  "model": "tags:fast&!vision",
+  "messages": [...]
+}
+```
+
+This selects providers tagged `fast` while excluding any provider tagged `vision`.
+
+You can combine multiple include and exclude tags:
+
+```json
+{
+  "model": "tags:fast&cheap&!vision&!slow",
+  "messages": [...]
+}
+```
+
+**Exclude-only** — omit include tags to match all providers, then filter by exclude tags:
+
+```json
+{
+  "model": "tags:!expensive",
+  "messages": [...]
 }
 ```
 
 Ayatori will:
 
-1. Find all providers with matching tags
-2. Filter out providers exceeding capacity limits
-3. Select the provider with the highest priority (lowest priority number)
+1. Find all providers matching the include tags (or all providers if none specified)
+2. Remove providers that have any of the exclude tags
+3. Filter out providers exceeding capacity limits
+4. Select the provider with the highest priority (lowest priority number)
 
 #### 2. Model-Based Selection
 
@@ -312,7 +338,7 @@ ayatori/
 2. **Authentication** validates bearer token (if configured)
 3. **Model Parsing** determines selection strategy (tags/model/id)
 4. **Provider Selection**:
-    - Tag-based: Filter by tags → filter by capacity → sort by priority
+    - Tag-based: Match include tags → remove exclude-tagged providers → filter by capacity → sort by priority
     - Model-based: Direct model-to-provider lookup
     - ID-based: Direct provider lookup
 5. **Fallback** to default provider if enabled and no match found

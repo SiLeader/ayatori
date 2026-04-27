@@ -1,8 +1,9 @@
 mod chat_completion;
+mod responses;
 
-use crate::endpoints::chat_completion::handle_chat_completion;
 use actix_web::web::ServiceConfig;
 
 pub(crate) fn register_endpoints(config: &mut ServiceConfig) {
-    config.service(handle_chat_completion);
+    config.service(chat_completion::handle_chat_completion);
+    config.service(responses::handler::handle_create_response);
 }

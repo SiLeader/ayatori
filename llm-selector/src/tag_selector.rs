@@ -157,6 +157,7 @@ mod tests {
                     id: "fast-primary".to_string(),
                     default: Some(true),
                     provider_type: LlmProviderType::OpenAI,
+                    responses_native: None,
                     priority: 0,
                     model: "model-a".to_string(),
                     tags: vec!["fast".to_string(), "cheap".to_string()],
@@ -171,6 +172,7 @@ mod tests {
                     id: "fast-secondary".to_string(),
                     default: Some(false),
                     provider_type: LlmProviderType::OpenAI,
+                    responses_native: None,
                     priority: 1,
                     model: "model-b".to_string(),
                     tags: vec![
@@ -189,6 +191,7 @@ mod tests {
                     id: "smart-only".to_string(),
                     default: Some(false),
                     provider_type: LlmProviderType::OpenAI,
+                    responses_native: None,
                     priority: 2,
                     model: "model-c".to_string(),
                     tags: vec!["smart".to_string()],

@@ -16,6 +16,8 @@ pub struct LlmProvider {
     pub default: Option<bool>,
     #[serde(rename = "type")]
     pub provider_type: LlmProviderType,
+    #[serde(default)]
+    pub responses_native: Option<bool>,
     pub priority: usize,
     pub model: String,
     pub tags: Vec<String>,
@@ -33,8 +35,7 @@ pub struct CapacityLimits {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LlmProviderType {
     Azure,
-    // Not yet supported
-    // Bedrock,
+    Bedrock,
     Anthropic,
     Ollama,
     OpenAI,

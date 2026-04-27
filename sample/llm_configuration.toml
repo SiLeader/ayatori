@@ -2,9 +2,46 @@
 id = "ollama-gemma3"
 default = true
 type = "Ollama"
+responses_native = false
 priority = 0
 model = "gemma3:4b"
 tags = ["light", "summarize"]
 credential_file = "./sample/credentials/ollama-gemma3.toml"
 endpoint = "http://localhost:11434"
 capacity = { input_tokens = 5000, requests = 5 }
+
+[[providers]]
+id = "openai-gpt-4o-mini"
+default = false
+type = "OpenAI"
+responses_native = true
+priority = 1
+model = "gpt-4o-mini"
+tags = ["general", "native-responses"]
+credential_file = "./sample/credentials/openai-gpt-4o-mini.toml"
+endpoint = "https://api.openai.com/v1"
+capacity = { input_tokens = 100000, requests = 50 }
+
+[[providers]]
+id = "azure-gpt-4o-mini"
+default = false
+type = "Azure"
+responses_native = true
+priority = 2
+model = "gpt-4o-mini"
+tags = ["general", "azure", "native-responses"]
+credential_file = "./sample/credentials/azure-gpt-4o-mini.toml"
+endpoint = "https://your-resource.openai.azure.com/openai/v1"
+capacity = { input_tokens = 100000, requests = 50 }
+
+[[providers]]
+id = "bedrock-claude-3-7-sonnet"
+default = false
+type = "Bedrock"
+responses_native = false
+priority = 3
+model = "anthropic.claude-3-7-sonnet-20250219-v1:0"
+tags = ["reasoning", "bedrock"]
+credential_file = "./sample/credentials/bedrock-claude-3-7-sonnet.toml"
+endpoint = "https://bedrock-runtime.ap-northeast-1.amazonaws.com"
+capacity = { input_tokens = 100000, requests = 20 }

@@ -28,10 +28,10 @@ pub struct TlsConfig {
 }
 
 #[derive(Clone, Debug)]
-struct ApiKey(Option<String>);
+pub struct ApiKey(Option<String>);
 
 #[derive(Clone, Debug)]
-struct AppConfig {
+pub struct AppConfig {
     pub(crate) client_fallback_enabled: bool,
 }
 
@@ -45,6 +45,10 @@ impl TlsConfig {
 }
 
 impl ApiKey {
+    pub fn new(value: Option<String>) -> Self {
+        Self(value)
+    }
+
     fn check_api_key_using_token_str(&self, auth: Option<&str>) -> Result<(), ErrorResponse> {
         if let Some(auth) = auth {
             if self.0.as_ref().is_none_or(|s| auth != s) {
@@ -59,6 +63,18 @@ impl ApiKey {
     fn check_api_key(&self, auth: Option<BearerAuth>) -> Result<(), ErrorResponse> {
         self.check_api_key_using_token_str(auth.as_ref().map(|a| a.token()))
     }
+}
+
+impl AppConfig {
+    pub fn new(client_fallback_enabled: bool) -> Self {
+        Self {
+            client_fallback_enabled,
+        }
+    }
+}
+
+pub fn configure_openai_compatible_endpoints(config: &mut actix_web::web::ServiceConfig) {
+    endpoints::register_endpoints(config);
 }
 
 impl OpenAiServer {
@@ -81,10 +97,8 @@ impl OpenAiServer {
     }
 
     pub async fn run(self) {
-        let api_key = ApiKey(self.api_key);
-        let app_config = AppConfig {
-            client_fallback_enabled: self.client_fallback_enabled,
-        };
+        let api_key = ApiKey::new(self.api_key);
+        let app_config = AppConfig::new(self.client_fallback_enabled);
         let server = HttpServer::new(move || {
             App::new()
                 .wrap(Logger::default().exclude("/healthz"))
