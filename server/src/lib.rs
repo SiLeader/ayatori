@@ -1,5 +1,6 @@
 mod endpoints;
 mod error;
+mod model;
 
 use crate::error::ErrorResponse;
 use actix_web::middleware::Logger;
