@@ -1,6 +1,5 @@
 use crate::config::Config;
 use clap::Parser;
-use llm_responses::LlmResponsesComposer;
 use llm_selector::LlmSelector;
 use server::{OpenAiServer, TlsConfig};
 use token_measure::TokenMeasure;
@@ -43,7 +42,6 @@ async fn main() {
     debug!("API key loaded");
 
     debug!("Loading LLM selector");
-    let responses_composer = LlmResponsesComposer::new(configuration.clone());
     let selector = {
         let usage_store = config.load_usage_store().await;
         LlmSelector::new(configuration, usage_store)
@@ -53,7 +51,6 @@ async fn main() {
 
     OpenAiServer::new(
         selector,
-        responses_composer,
         config.server.listen,
         config
             .server

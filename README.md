@@ -201,6 +201,22 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+#### Responses API
+
+**Endpoint:** `POST /v1/responses`
+
+Current status: non-streaming requests are supported for OpenAI/Azure-native Responses backends.
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key" \
+  -d '{
+    "model": "tags:fast",
+    "input": "Hello!"
+  }'
+```
+
 ### Model Selection Strategies
 
 Ayatori supports three ways to select providers:

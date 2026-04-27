@@ -7,7 +7,6 @@ use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use actix_web::{App, HttpResponse, HttpServer, get};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
-use llm_responses::LlmResponsesComposer;
 use llm_selector::LlmSelector;
 use rustls::ServerConfig;
 use rustls::pki_types::pem::PemObject;
@@ -16,7 +15,6 @@ use token_measure::TokenMeasure;
 
 pub struct OpenAiServer {
     selector: LlmSelector,
-    responses_composer: LlmResponsesComposer,
     listen: String,
     tls_config: Option<TlsConfig>,
     api_key: Option<String>,
@@ -82,7 +80,6 @@ pub fn configure_openai_compatible_endpoints(config: &mut actix_web::web::Servic
 impl OpenAiServer {
     pub fn new(
         selector: LlmSelector,
-        responses_composer: LlmResponsesComposer,
         listen: String,
         tls_config: Option<TlsConfig>,
         api_key: Option<String>,
@@ -91,7 +88,6 @@ impl OpenAiServer {
     ) -> Self {
         Self {
             selector,
-            responses_composer,
             listen,
             tls_config,
             api_key,
@@ -107,7 +103,6 @@ impl OpenAiServer {
             App::new()
                 .wrap(Logger::default().exclude("/healthz"))
                 .app_data(Data::new(self.selector.clone()))
-                .app_data(Data::new(self.responses_composer.clone()))
                 .app_data(Data::new(api_key.clone()))
                 .app_data(Data::new(app_config.clone()))
                 .app_data(Data::new(self.token_measure.clone()))

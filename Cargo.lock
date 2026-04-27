@@ -1596,6 +1596,7 @@ dependencies = [
  "async-trait",
  "configuration",
  "llm-composer",
+ "llm-responses",
  "redis",
  "serde",
  "tokio",
