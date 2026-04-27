@@ -67,6 +67,26 @@ where
     })
 }
 
+pub(crate) async fn send_request<R>(
+    request_builder: reqwest::RequestBuilder,
+) -> Result<R, ResponsesError>
+where
+    R: DeserializeOwned,
+{
+    let response = request_builder.send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+
+    if !status.is_success() {
+        return Err(match status.as_u16() {
+            401 | 403 => ResponsesError::Authentication,
+            code => ResponsesError::Http { status: code, body },
+        });
+    }
+
+    serde_json::from_str(&body).map_err(ResponsesError::from)
+}
+
 pub(crate) fn openai_responses_url(endpoint: &str) -> String {
     let endpoint = endpoint.trim_end_matches('/');
     if endpoint.ends_with("/responses") {

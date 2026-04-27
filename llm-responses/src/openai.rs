@@ -1,4 +1,4 @@
-use crate::http::{openai_responses_url, send_json, send_stream};
+use crate::http::{openai_responses_url, send_json, send_request, send_stream};
 use crate::types::{CreateResponseRequest, ResponseObject, ResponseStreamEvent};
 use crate::{ProviderCapabilities, ResponsesError, ResponsesProvider};
 use async_trait::async_trait;
@@ -85,6 +85,15 @@ impl ResponsesProvider for OpenAiResponsesProvider {
             });
 
         Ok(Box::pin(stream))
+    }
+
+    async fn cancel_response(&self, id: &str) -> Result<ResponseObject, ResponsesError> {
+        let url = format!("{}/{id}/cancel", openai_responses_url(&self.endpoint));
+        let request_builder = match &self.auth {
+            Auth::Bearer(api_key) => self.client.post(url).bearer_auth(api_key),
+            Auth::None => self.client.post(url),
+        };
+        send_request(request_builder).await
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

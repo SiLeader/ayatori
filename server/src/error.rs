@@ -72,6 +72,20 @@ impl ErrorResponse {
             error: ApiError::feature_not_supported(feature),
         }
     }
+
+    pub(crate) fn response_not_found() -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            error: ApiError::response_not_found(),
+        }
+    }
+
+    pub(crate) fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            error: ApiError::conflict(message.into()),
+        }
+    }
 }
 
 impl ApiError {
@@ -117,6 +131,24 @@ impl ApiError {
             error_type: ErrorType::InvalidRequestError,
             param: None,
             code: "feature_not_supported".to_string(),
+        }
+    }
+
+    fn response_not_found() -> Self {
+        Self {
+            message: "Response not found".to_string(),
+            error_type: ErrorType::InvalidRequestError,
+            param: Some("response_id".to_string()),
+            code: "response_not_found".to_string(),
+        }
+    }
+
+    fn conflict(message: String) -> Self {
+        Self {
+            message,
+            error_type: ErrorType::InvalidRequestError,
+            param: None,
+            code: "conflict".to_string(),
         }
     }
 

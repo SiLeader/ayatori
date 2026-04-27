@@ -1,4 +1,4 @@
-use crate::http::{azure_responses_url, send_json, send_stream};
+use crate::http::{azure_responses_url, send_json, send_request, send_stream};
 use crate::types::{CreateResponseRequest, ResponseObject, ResponseStreamEvent};
 use crate::{ProviderCapabilities, ResponsesError, ResponsesProvider};
 use async_trait::async_trait;
@@ -86,6 +86,17 @@ impl ResponsesProvider for AzureOpenAiResponsesProvider {
             });
 
         Ok(Box::pin(stream))
+    }
+
+    async fn cancel_response(&self, id: &str) -> Result<ResponseObject, ResponsesError> {
+        let url = format!(
+            "{}/{id}/cancel?api-version={}",
+            azure_responses_url(&self.endpoint, &self.api_version)
+                .trim_end_matches(&format!("?api-version={}", self.api_version)),
+            self.api_version
+        );
+        let request_builder = self.client.post(url).header("api-key", &self.api_key);
+        send_request(request_builder).await
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

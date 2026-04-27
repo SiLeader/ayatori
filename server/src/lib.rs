@@ -7,10 +7,13 @@ use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use actix_web::{App, HttpResponse, HttpServer, get};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
+use llm_responses::{LocalResponseStore, ResponseStore};
 use llm_selector::LlmSelector;
 use rustls::ServerConfig;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use std::sync::Arc;
+use std::time::Duration;
 use token_measure::TokenMeasure;
 
 pub struct OpenAiServer {
@@ -19,6 +22,8 @@ pub struct OpenAiServer {
     tls_config: Option<TlsConfig>,
     api_key: Option<String>,
     client_fallback_enabled: bool,
+    response_store: Arc<dyn ResponseStore>,
+    response_store_ttl: Option<Duration>,
     token_measure: TokenMeasure,
 }
 
@@ -30,9 +35,11 @@ pub struct TlsConfig {
 #[derive(Clone, Debug)]
 pub struct ApiKey(Option<String>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AppConfig {
     pub(crate) client_fallback_enabled: bool,
+    pub(crate) response_store: Arc<dyn ResponseStore>,
+    pub(crate) response_store_ttl: Option<Duration>,
 }
 
 impl TlsConfig {
@@ -67,9 +74,32 @@ impl ApiKey {
 
 impl AppConfig {
     pub fn new(client_fallback_enabled: bool) -> Self {
+        Self::with_response_store(
+            client_fallback_enabled,
+            Arc::new(LocalResponseStore::new(10_000)),
+            Some(Duration::from_secs(24 * 60 * 60)),
+        )
+    }
+
+    pub fn with_response_store(
+        client_fallback_enabled: bool,
+        response_store: Arc<dyn ResponseStore>,
+        response_store_ttl: Option<Duration>,
+    ) -> Self {
         Self {
             client_fallback_enabled,
+            response_store,
+            response_store_ttl,
         }
+    }
+}
+
+impl std::fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppConfig")
+            .field("client_fallback_enabled", &self.client_fallback_enabled)
+            .field("response_store_ttl", &self.response_store_ttl)
+            .finish()
     }
 }
 
@@ -84,6 +114,8 @@ impl OpenAiServer {
         tls_config: Option<TlsConfig>,
         api_key: Option<String>,
         client_fallback_enabled: bool,
+        response_store: Arc<dyn ResponseStore>,
+        response_store_ttl: Option<Duration>,
         token_measure: TokenMeasure,
     ) -> Self {
         Self {
@@ -92,13 +124,19 @@ impl OpenAiServer {
             tls_config,
             api_key,
             client_fallback_enabled,
+            response_store,
+            response_store_ttl,
             token_measure,
         }
     }
 
     pub async fn run(self) {
         let api_key = ApiKey::new(self.api_key);
-        let app_config = AppConfig::new(self.client_fallback_enabled);
+        let app_config = AppConfig::with_response_store(
+            self.client_fallback_enabled,
+            self.response_store,
+            self.response_store_ttl,
+        );
         let server = HttpServer::new(move || {
             App::new()
                 .wrap(Logger::default().exclude("/healthz"))

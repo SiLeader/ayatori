@@ -1,4 +1,5 @@
 use configuration::Configuration;
+use llm_responses::{ResponseStore, ResponseStoreConfig};
 use llm_selector::{UsageStore, UsageStoreConfig};
 use serde::Deserialize;
 use std::fs::read_to_string;
@@ -11,6 +12,8 @@ pub(crate) struct Config {
     llm_configuration: String,
     pub server: ServerConfig,
     usage_store: UsageStoreConfig,
+    #[serde(default)]
+    response_store: ResponseStoreConfig,
     pub token_measure: TokenMeasureConfig,
 }
 
@@ -43,6 +46,14 @@ impl Config {
 
     pub(crate) async fn load_usage_store(&self) -> Arc<dyn UsageStore> {
         self.usage_store.create().await
+    }
+
+    pub(crate) async fn load_response_store(&self) -> Arc<dyn ResponseStore> {
+        self.response_store.create().await
+    }
+
+    pub(crate) fn response_store_ttl(&self) -> Option<std::time::Duration> {
+        self.response_store.ttl()
     }
 
     pub(crate) fn load_api_key(&self) -> Option<String> {

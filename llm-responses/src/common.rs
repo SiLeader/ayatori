@@ -255,6 +255,10 @@ pub(crate) fn function_tools(
                 parameters,
                 ..
             } => out.push((name.as_str(), description.as_deref(), parameters.as_ref())),
+            ToolDefinition::WebSearch { .. }
+            | ToolDefinition::FileSearch { .. }
+            | ToolDefinition::ComputerUsePreview { .. }
+            | ToolDefinition::CodeInterpreter { .. } => {}
         }
     }
     out

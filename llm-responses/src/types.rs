@@ -218,6 +218,10 @@ pub enum OutputItem {
     Message(OutputMessage),
     FunctionCall(FunctionCallItem),
     Reasoning(ReasoningItem),
+    WebSearchCall(BuiltinToolCall),
+    FileSearchCall(BuiltinToolCall),
+    ComputerCall(BuiltinToolCall),
+    CodeInterpreterCall(BuiltinToolCall),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,6 +328,23 @@ pub enum ToolDefinition {
         #[serde(skip_serializing_if = "Option::is_none")]
         strict: Option<bool>,
     },
+    WebSearch {
+        #[serde(flatten)]
+        tool: BuiltinToolDefinition,
+    },
+    FileSearch {
+        #[serde(flatten)]
+        tool: BuiltinToolDefinition,
+    },
+    #[serde(rename = "computer_use_preview")]
+    ComputerUsePreview {
+        #[serde(flatten)]
+        tool: BuiltinToolDefinition,
+    },
+    CodeInterpreter {
+        #[serde(flatten)]
+        tool: BuiltinToolDefinition,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,6 +357,22 @@ pub enum ToolChoice {
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuiltinToolDefinition {
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuiltinToolCall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

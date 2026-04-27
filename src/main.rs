@@ -46,6 +46,8 @@ async fn main() {
         let usage_store = config.load_usage_store().await;
         LlmSelector::new(configuration, usage_store)
     };
+    let response_store = config.load_response_store().await;
+    let response_store_ttl = config.response_store_ttl();
 
     let token_measure = TokenMeasure::from(config.token_measure);
 
@@ -58,6 +60,8 @@ async fn main() {
             .map(|tls| TlsConfig::new(tls.private_key_file, tls.certificate_chain_file)),
         api_key,
         config.server.client_fallback_enabled.unwrap_or(false),
+        response_store,
+        response_store_ttl,
         token_measure,
     )
     .run()
