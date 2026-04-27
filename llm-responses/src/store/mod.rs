@@ -19,7 +19,8 @@ pub enum StoreError {
 
 #[async_trait]
 pub trait ResponseStore: Send + Sync {
-    async fn put(&self, response: &ResponseObject, ttl: Option<Duration>) -> Result<(), StoreError>;
+    async fn put(&self, response: &ResponseObject, ttl: Option<Duration>)
+    -> Result<(), StoreError>;
     async fn get(&self, id: &str) -> Result<Option<ResponseObject>, StoreError>;
     async fn delete(&self, id: &str) -> Result<bool, StoreError>;
     async fn append_input_chain(
@@ -59,7 +60,7 @@ impl ResponseStoreConfig {
 
     pub fn ttl(&self) -> Option<Duration> {
         match self {
-            Self::Local { ttl_seconds, .. } => ttl_seconds.map(|seconds| Duration::from_secs(seconds)),
+            Self::Local { ttl_seconds, .. } => ttl_seconds.map(Duration::from_secs),
         }
     }
 }

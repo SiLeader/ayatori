@@ -78,7 +78,9 @@ impl ResponsesProvider for AzureOpenAiResponsesProvider {
             .filter_map(|event| async move {
                 match event {
                     Ok(event) if event.data == "[DONE]" || event.data.is_empty() => None,
-                    Ok(event) => Some(serde_json::from_str(&event.data).map_err(ResponsesError::from)),
+                    Ok(event) => {
+                        Some(serde_json::from_str(&event.data).map_err(ResponsesError::from))
+                    }
                     Err(error) => Some(Err(ResponsesError::Internal(format!(
                         "failed to parse SSE stream: {error}"
                     )))),

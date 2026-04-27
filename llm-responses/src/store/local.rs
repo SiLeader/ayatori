@@ -42,7 +42,11 @@ impl LocalResponseStore {
 
 #[async_trait]
 impl ResponseStore for LocalResponseStore {
-    async fn put(&self, response: &ResponseObject, ttl: Option<Duration>) -> Result<(), StoreError> {
+    async fn put(
+        &self,
+        response: &ResponseObject,
+        ttl: Option<Duration>,
+    ) -> Result<(), StoreError> {
         let mut state = self.inner.write().await;
         purge_expired(&mut state);
         let expires_at = ttl.map(|ttl| Instant::now() + ttl);
@@ -130,10 +134,11 @@ fn purge_expired(state: &mut LocalStoreState) {
 }
 
 fn remove_if_expired(state: &mut LocalStoreState, id: &str) -> bool {
-    let expired = state
-        .entries
-        .get(id)
-        .is_some_and(|entry| entry.expires_at.is_some_and(|expires_at| expires_at <= Instant::now()));
+    let expired = state.entries.get(id).is_some_and(|entry| {
+        entry
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= Instant::now())
+    });
     if expired {
         state.entries.remove(id);
     }

@@ -10,6 +10,11 @@ client_fallback_enabled = true
 [usage_store]
 type = "Local"
 
+[response_store]
+type = "Local"
+ttl_seconds = 86400
+max_entries = 10000
+
 #[usage_store]
 #type = "Redis"
 #host = "localhost"
@@ -23,6 +28,11 @@ type = "Local"
 #client_key_file = "/path/to/redis/key.pem"
 #response_timeout_seconds = 3
 #connect_timeout_seconds = 3
+
+#[response_store]
+#type = "Local"
+#ttl_seconds = 86400
+#max_entries = 10000
 
 [token_measure]
 type = "ByteLength"

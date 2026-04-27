@@ -89,14 +89,16 @@ impl ResponsesProvider for AnthropicResponsesProvider {
             .map(move |event| {
                 let events = match event {
                     Ok(event) if event.data.is_empty() => Vec::new(),
-                    Ok(event) => match serde_json::from_str::<AnthropicStreamPayload>(&event.data) {
-                        Ok(payload) => mapper
-                            .handle(payload)
-                            .into_iter()
-                            .map(Ok)
-                            .collect::<Vec<_>>(),
-                        Err(error) => vec![Err(ResponsesError::Serde(error))],
-                    },
+                    Ok(event) => {
+                        match serde_json::from_str::<AnthropicStreamPayload>(&event.data) {
+                            Ok(payload) => mapper
+                                .handle(payload)
+                                .into_iter()
+                                .map(Ok)
+                                .collect::<Vec<_>>(),
+                            Err(error) => vec![Err(ResponsesError::Serde(error))],
+                        }
+                    }
                     Err(error) => vec![Err(ResponsesError::Internal(format!(
                         "failed to parse SSE stream: {error}"
                     )))],

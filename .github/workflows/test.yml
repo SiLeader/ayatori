@@ -25,7 +25,7 @@ jobs:
       - name: Run tests
         shell: bash
         run: |
-          cargo test --workspace
+          cargo test --workspace --all-targets
 
   lint:
     runs-on: ubuntu-latest
@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           cargo fmt --all -- --check
-          cargo clippy --workspace -- -D warnings
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   license:
     runs-on: ubuntu-latest

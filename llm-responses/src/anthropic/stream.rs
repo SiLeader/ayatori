@@ -24,10 +24,7 @@ impl AnthropicStreamMapper {
         }
     }
 
-    pub(crate) fn handle(
-        &mut self,
-        event: AnthropicStreamPayload,
-    ) -> Vec<ResponseStreamEvent> {
+    pub(crate) fn handle(&mut self, event: AnthropicStreamPayload) -> Vec<ResponseStreamEvent> {
         match event {
             AnthropicStreamPayload::MessageStart { message } => {
                 if let Some(id) = message.id {
@@ -78,29 +75,29 @@ impl AnthropicStreamMapper {
         match content_block {
             AnthropicContentBlock::Text { text } => {
                 let mut events = Vec::new();
-                let (output_index, item_id) = if let Some(output_index) = self.current_message_output_index
-                {
-                    (
-                        output_index,
-                        self.message_item(output_index)
-                            .map(|message| message.id.clone())
-                            .unwrap_or_else(|| new_id("msg")),
-                    )
-                } else {
-                    let message = OutputMessage {
-                        id: new_id("msg"),
-                        status: "in_progress".to_string(),
-                        role: "assistant".to_string(),
-                        content: Vec::new(),
+                let (output_index, item_id) =
+                    if let Some(output_index) = self.current_message_output_index {
+                        (
+                            output_index,
+                            self.message_item(output_index)
+                                .map(|message| message.id.clone())
+                                .unwrap_or_else(|| new_id("msg")),
+                        )
+                    } else {
+                        let message = OutputMessage {
+                            id: new_id("msg"),
+                            status: "in_progress".to_string(),
+                            role: "assistant".to_string(),
+                            content: Vec::new(),
+                        };
+                        let output_index = self.push_output(OutputItem::Message(message.clone()));
+                        self.current_message_output_index = Some(output_index);
+                        events.push(ResponseStreamEvent::OutputItemAdded {
+                            output_index,
+                            item: OutputItem::Message(message.clone()),
+                        });
+                        (output_index, message.id)
                     };
-                    let output_index = self.push_output(OutputItem::Message(message.clone()));
-                    self.current_message_output_index = Some(output_index);
-                    events.push(ResponseStreamEvent::OutputItemAdded {
-                        output_index,
-                        item: OutputItem::Message(message.clone()),
-                    });
-                    (output_index, message.id)
-                };
 
                 let part = ContentPartOutput::OutputText {
                     text: text.clone().unwrap_or_default(),
@@ -133,7 +130,9 @@ impl AnthropicStreamMapper {
             }
             AnthropicContentBlock::ToolUse { id, name, input } => {
                 self.current_message_output_index = None;
-                let arguments = input.unwrap_or(Value::Object(Default::default())).to_string();
+                let arguments = input
+                    .unwrap_or(Value::Object(Default::default()))
+                    .to_string();
                 let item = FunctionCallItem {
                     id: new_id("fc"),
                     call_id: id,
@@ -155,7 +154,10 @@ impl AnthropicStreamMapper {
                     item: OutputItem::FunctionCall(item),
                 }]
             }
-            AnthropicContentBlock::Thinking { thinking, signature } => {
+            AnthropicContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
                 let item = ReasoningItem {
                     id: new_id("rs"),
                     summary: vec![SummaryPart::Text {
@@ -468,9 +470,11 @@ impl AnthropicStreamMapper {
             .unwrap_or_else(|| usage(0, None, 0, None));
         let input_tokens = current.input_tokens + usage_delta.input_tokens.unwrap_or_default();
         let output_tokens = current.output_tokens + usage_delta.output_tokens.unwrap_or_default();
-        let cached_tokens = usage_delta
-            .cache_read_input_tokens
-            .or_else(|| current.input_tokens_details.map(|details| details.cached_tokens));
+        let cached_tokens = usage_delta.cache_read_input_tokens.or_else(|| {
+            current
+                .input_tokens_details
+                .map(|details| details.cached_tokens)
+        });
 
         self.response.usage = Some(ResponseUsage {
             total_tokens: input_tokens + output_tokens,
@@ -561,6 +565,7 @@ pub(crate) enum AnthropicContentBlock {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum AnthropicDelta {
     TextDelta { text: String },
     InputJsonDelta { partial_json: String },

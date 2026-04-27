@@ -108,6 +108,7 @@ pub fn configure_openai_compatible_endpoints(config: &mut actix_web::web::Servic
 }
 
 impl OpenAiServer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         selector: LlmSelector,
         listen: String,

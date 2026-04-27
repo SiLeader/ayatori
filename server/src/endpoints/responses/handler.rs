@@ -13,8 +13,8 @@ use futures::StreamExt;
 use llm_responses::{ProviderCapabilities, ResponseStore, ResponsesProvider, StoreError};
 use llm_selector::{LlmSelector, Usage};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use token_measure::TokenMeasure;
 use tracing::error;
 use uuid::Uuid;
@@ -40,7 +40,8 @@ pub(crate) async fn handle_create_response(
         .into();
     }
 
-    if let Err(response) = merge_previous_response_input(&app_config.response_store, &mut request).await
+    if let Err(response) =
+        merge_previous_response_input(&app_config.response_store, &mut request).await
     {
         return response.into();
     }
@@ -95,12 +96,16 @@ pub(crate) async fn handle_create_response(
     };
     apply_response_metadata(&mut response, &id, &request);
 
-    if request.store.unwrap_or(true) {
-        if let Err(store_error) =
-            store_response(&app_config.response_store, app_config.response_store_ttl, &response, &request).await
-        {
-            return store_error.into();
-        }
+    if request.store.unwrap_or(true)
+        && let Err(store_error) = store_response(
+            &app_config.response_store,
+            app_config.response_store_ttl,
+            &response,
+            &request,
+        )
+        .await
+    {
+        return store_error.into();
     }
 
     HttpResponse::Ok().json(response)
@@ -168,7 +173,10 @@ pub(crate) async fn handle_cancel_response(
         return ErrorResponse::response_not_found().into();
     };
 
-    if !matches!(response.status, ResponseStatus::Queued | ResponseStatus::InProgress) {
+    if !matches!(
+        response.status,
+        ResponseStatus::Queued | ResponseStatus::InProgress
+    ) {
         return ErrorResponse::conflict("response is not cancellable in its current state").into();
     }
 
@@ -265,7 +273,8 @@ async fn handle_background(
     let response_id = format!("resp_bg_{}", Uuid::new_v4().simple());
     let mut queued = queued_response(&response_id, &request, &client_id);
 
-    if let Err(error) = store_response(&response_store, response_store_ttl, &queued, &request).await {
+    if let Err(error) = store_response(&response_store, response_store_ttl, &queued, &request).await
+    {
         if let Err(remove_error) = selector.remove_usage(&client_id, &usage).await {
             error!("remove_usage failed: {remove_error:?}");
         }
@@ -278,7 +287,9 @@ async fn handle_background(
     let client_id_clone = client_id.clone();
     let response_id_clone = response_id.clone();
     tokio::spawn(async move {
-        let result = provider.create_response(provider_request(&request_clone)).await;
+        let result = provider
+            .create_response(provider_request(&request_clone))
+            .await;
 
         let should_skip = match response_store_clone.get(&response_id_clone).await {
             Ok(Some(existing)) => matches!(existing.status, ResponseStatus::Cancelled),
@@ -297,11 +308,16 @@ async fn handle_background(
                     apply_response_metadata(&mut response, &client_id_clone, &request_clone);
                     response
                 }
-                Err(error) => failed_response(&response_id_clone, &request_clone, &client_id_clone, &error),
+                Err(error) => {
+                    failed_response(&response_id_clone, &request_clone, &client_id_clone, &error)
+                }
             };
             response.ensure_output_text();
 
-            if let Err(error) = response_store_clone.put(&response, response_store_ttl).await {
+            if let Err(error) = response_store_clone
+                .put(&response, response_store_ttl)
+                .await
+            {
                 tracing::error!("background store put failed: {error}");
             }
         }
@@ -323,7 +339,10 @@ async fn handle_streaming(
     usage: Usage,
     app_config: Data<AppConfig>,
 ) -> HttpResponse {
-    let stream = match provider.create_response_stream(provider_request(&request)).await {
+    let stream = match provider
+        .create_response_stream(provider_request(&request))
+        .await
+    {
         Ok(stream) => stream,
         Err(error) => {
             if let Err(remove_error) = selector.remove_usage(&client_id, &usage).await {
@@ -382,10 +401,9 @@ async fn handle_streaming(
                         | ResponseStreamEvent::Incomplete { .. }
                         | ResponseStreamEvent::Error { .. }
                 )
+                && !usage_released.swap(true, Ordering::AcqRel)
             {
-                if !usage_released.swap(true, Ordering::AcqRel) {
-                    release_usage(selector_clone.clone(), id_clone.clone(), usage.clone());
-                }
+                release_usage(selector_clone.clone(), id_clone.clone(), usage.clone());
             }
 
             if store_enabled
@@ -407,7 +425,9 @@ async fn handle_streaming(
                 .to_string()
             });
 
-            Ok::<Bytes, actix_web::Error>(Bytes::from(format!("event: {event_name}\ndata: {data}\n\n")))
+            Ok::<Bytes, actix_web::Error>(Bytes::from(format!(
+                "event: {event_name}\ndata: {data}\n\n"
+            )))
         }
     });
 
@@ -489,13 +509,21 @@ async fn store_response(
     Ok(())
 }
 
-fn apply_response_metadata(response: &mut ResponseObject, client_id: &str, request: &CreateResponseRequest) {
+fn apply_response_metadata(
+    response: &mut ResponseObject,
+    client_id: &str,
+    request: &CreateResponseRequest,
+) {
     response.ayatori_client_id = client_id.to_string();
     response.previous_response_id = request.previous_response_id.clone();
     response.ensure_output_text();
 }
 
-fn queued_response(response_id: &str, request: &CreateResponseRequest, client_id: &str) -> ResponseObject {
+fn queued_response(
+    response_id: &str,
+    request: &CreateResponseRequest,
+    client_id: &str,
+) -> ResponseObject {
     let mut response = base_response(response_id, request);
     response.status = ResponseStatus::Queued;
     response.ayatori_client_id = client_id.to_string();
@@ -591,18 +619,18 @@ fn request_uses_image_input(input: &ResponseInput) -> bool {
 
 fn request_uses_builtin_tools(request: &CreateResponseRequest) -> bool {
     request.tools.as_ref().is_some_and(|tools| {
-        tools.iter().any(|tool| {
-            !matches!(tool, super::ToolDefinition::Function { .. })
-        })
+        tools
+            .iter()
+            .any(|tool| !matches!(tool, super::ToolDefinition::Function { .. }))
     })
 }
 
 fn map_store_error(error: StoreError) -> ErrorResponse {
     match error {
         StoreError::NotFound => ErrorResponse::response_not_found(),
-        StoreError::Internal(message) => ErrorResponse::from(llm_responses::ResponsesError::Internal(
-            format!("response store: {message}"),
-        )),
+        StoreError::Internal(message) => ErrorResponse::from(
+            llm_responses::ResponsesError::Internal(format!("response store: {message}")),
+        ),
     }
 }
 

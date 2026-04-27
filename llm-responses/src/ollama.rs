@@ -10,16 +10,15 @@ use crate::types::{
 use crate::{ProviderCapabilities, ResponsesError, ResponsesProvider};
 use async_trait::async_trait;
 use configuration::{Credential, LlmProvider, LlmProviderType};
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     Binary, BinarySource, ChatMessage, ChatOptions, ChatRequest, ChatResponse, ChatResponseFormat,
-    ChatRole, ChatStreamEvent, ContentPart, JsonSpec, MessageContent, Tool, ToolCall,
-    ToolResponse,
+    ChatRole, ChatStreamEvent, ContentPart, JsonSpec, MessageContent, Tool, ToolCall, ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
-use futures::StreamExt;
-use futures::stream::BoxStream;
 use std::collections::HashMap;
 
 pub(crate) struct GenaiBackedProvider {
@@ -101,11 +100,7 @@ impl ResponsesProvider for GenaiBackedProvider {
             .stream
             .map(move |event| {
                 let events = match event {
-                    Ok(event) => mapper
-                        .handle(event)
-                        .into_iter()
-                        .map(Ok)
-                        .collect::<Vec<_>>(),
+                    Ok(event) => mapper.handle(event).into_iter().map(Ok).collect::<Vec<_>>(),
                     Err(error) => vec![Err(ResponsesError::Internal(format!("genai: {error}")))],
                 };
                 futures::stream::iter(events)
@@ -437,7 +432,9 @@ impl GenaiStreamMapper {
                 }],
             };
             let output_index = self.response.output.len() as u32;
-            self.response.output.push(OutputItem::Message(message.clone()));
+            self.response
+                .output
+                .push(OutputItem::Message(message.clone()));
             self.message_output_index = Some(output_index);
             events.push(ResponseStreamEvent::OutputItemAdded {
                 output_index,
@@ -455,7 +452,8 @@ impl GenaiStreamMapper {
             (output_index, message.id)
         };
 
-        if let Some(OutputItem::Message(message)) = self.response.output.get_mut(output_index as usize)
+        if let Some(OutputItem::Message(message)) =
+            self.response.output.get_mut(output_index as usize)
             && let Some(crate::types::ContentPartOutput::OutputText { text, .. }) =
                 message.content.get_mut(0)
         {
@@ -492,7 +490,9 @@ impl GenaiStreamMapper {
                 encrypted_content: None,
             };
             let output_index = self.response.output.len() as u32;
-            self.response.output.push(OutputItem::Reasoning(item.clone()));
+            self.response
+                .output
+                .push(OutputItem::Reasoning(item.clone()));
             self.reasoning_output_index = Some(output_index);
             events.push(ResponseStreamEvent::OutputItemAdded {
                 output_index,
@@ -509,7 +509,8 @@ impl GenaiStreamMapper {
             (output_index, item.id)
         };
 
-        if let Some(OutputItem::Reasoning(reasoning)) = self.response.output.get_mut(output_index as usize)
+        if let Some(OutputItem::Reasoning(reasoning)) =
+            self.response.output.get_mut(output_index as usize)
             && let Some(crate::types::SummaryPart::Text { text }) = reasoning.summary.first_mut()
         {
             text.push_str(&delta);
@@ -537,7 +538,9 @@ impl GenaiStreamMapper {
             status: "completed".to_string(),
         };
         let output_index = self.response.output.len() as u32;
-        self.response.output.push(OutputItem::FunctionCall(item.clone()));
+        self.response
+            .output
+            .push(OutputItem::FunctionCall(item.clone()));
         self.tool_calls.insert(tool_call.call_id, output_index);
 
         vec![
@@ -561,7 +564,8 @@ impl GenaiStreamMapper {
         let mut events = Vec::new();
 
         if let Some(output_index) = self.message_output_index
-            && let Some(OutputItem::Message(message)) = self.response.output.get_mut(output_index as usize)
+            && let Some(OutputItem::Message(message)) =
+                self.response.output.get_mut(output_index as usize)
             && message.status != "completed"
         {
             let part = message.content.first().cloned().unwrap_or(

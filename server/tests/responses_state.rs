@@ -171,7 +171,9 @@ async fn store_false_skips_response_persistence() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(message_response("resp_3", "ephemeral")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(message_response("resp_3", "ephemeral")),
+        )
         .mount(&mock_server)
         .await;
 
@@ -198,7 +200,9 @@ async fn management_endpoints_expose_stored_response_and_input_chain() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(message_response("resp_4", "stored")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(message_response("resp_4", "stored")),
+        )
         .mount(&mock_server)
         .await;
 
@@ -282,7 +286,9 @@ async fn background_requests_eventually_complete() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(message_response("resp_upstream", "done")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(message_response("resp_upstream", "done")),
+        )
         .mount(&mock_server)
         .await;
 

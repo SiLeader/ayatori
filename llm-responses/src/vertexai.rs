@@ -1,9 +1,9 @@
 use crate::common::{
     append_system_text, collect_text, function_call_output, function_tools,
     incomplete_for_max_tokens, input_items, make_in_progress_response, make_response, new_id,
-    parse_data_url_base64,
-    parse_json_objectish, parse_json_string, reasoning_budget, reasoning_output, response_format,
-    tool_call_id, tool_choice_mode, tool_name_from_call_id, usage,
+    parse_data_url_base64, parse_json_objectish, parse_json_string, reasoning_budget,
+    reasoning_output, response_format, tool_call_id, tool_choice_mode, tool_name_from_call_id,
+    usage,
 };
 use crate::http::{send_stream, send_value};
 use crate::types::{
@@ -72,12 +72,12 @@ impl ResponsesProvider for VertexAiResponsesProvider {
     ) -> Result<BoxStream<'static, Result<ResponseStreamEvent, ResponsesError>>, ResponsesError>
     {
         let payload = to_vertex_request(&request)?;
-        let model_path = if self.model.starts_with("publishers/") || self.model.starts_with("projects/")
-        {
-            self.model.clone()
-        } else {
-            format!("models/{}", self.model)
-        };
+        let model_path =
+            if self.model.starts_with("publishers/") || self.model.starts_with("projects/") {
+                self.model.clone()
+            } else {
+                format!("models/{}", self.model)
+            };
         let url = format!(
             "{}/v1/{}:streamGenerateContent?alt=sse&key={}",
             self.endpoint.trim_end_matches('/'),
@@ -93,11 +93,7 @@ impl ResponsesProvider for VertexAiResponsesProvider {
                 let events = match event {
                     Ok(event) if event.data == "[DONE]" || event.data.is_empty() => Vec::new(),
                     Ok(event) => match serde_json::from_str::<VertexStreamChunk>(&event.data) {
-                        Ok(chunk) => mapper
-                            .handle(chunk)
-                            .into_iter()
-                            .map(Ok)
-                            .collect::<Vec<_>>(),
+                        Ok(chunk) => mapper.handle(chunk).into_iter().map(Ok).collect::<Vec<_>>(),
                         Err(error) => vec![Err(ResponsesError::Serde(error))],
                     },
                     Err(error) => vec![Err(ResponsesError::Internal(format!(
@@ -559,42 +555,46 @@ impl VertexStreamMapper {
         }
 
         let mut events = Vec::new();
-        let (output_index, item_id, content_index) = if let Some(output_index) = self.message_output_index {
-            let item_id = match self.response.output.get(output_index as usize) {
-                Some(OutputItem::Message(message)) => message.id.clone(),
-                _ => new_id("msg"),
+        let (output_index, item_id, content_index) =
+            if let Some(output_index) = self.message_output_index {
+                let item_id = match self.response.output.get(output_index as usize) {
+                    Some(OutputItem::Message(message)) => message.id.clone(),
+                    _ => new_id("msg"),
+                };
+                (output_index, item_id, 0)
+            } else {
+                let message = crate::types::OutputMessage {
+                    id: new_id("msg"),
+                    status: "in_progress".to_string(),
+                    role: "assistant".to_string(),
+                    content: vec![crate::types::ContentPartOutput::OutputText {
+                        text: String::new(),
+                        annotations: vec![],
+                    }],
+                };
+                let output_index = self.response.output.len() as u32;
+                self.response
+                    .output
+                    .push(OutputItem::Message(message.clone()));
+                self.message_output_index = Some(output_index);
+                events.push(ResponseStreamEvent::OutputItemAdded {
+                    output_index,
+                    item: OutputItem::Message(message.clone()),
+                });
+                events.push(ResponseStreamEvent::ContentPartAdded {
+                    item_id: message.id.clone(),
+                    output_index,
+                    content_index: 0,
+                    part: crate::types::ContentPartOutput::OutputText {
+                        text: String::new(),
+                        annotations: vec![],
+                    },
+                });
+                (output_index, message.id, 0)
             };
-            (output_index, item_id, 0)
-        } else {
-            let message = crate::types::OutputMessage {
-                id: new_id("msg"),
-                status: "in_progress".to_string(),
-                role: "assistant".to_string(),
-                content: vec![crate::types::ContentPartOutput::OutputText {
-                    text: String::new(),
-                    annotations: vec![],
-                }],
-            };
-            let output_index = self.response.output.len() as u32;
-            self.response.output.push(OutputItem::Message(message.clone()));
-            self.message_output_index = Some(output_index);
-            events.push(ResponseStreamEvent::OutputItemAdded {
-                output_index,
-                item: OutputItem::Message(message.clone()),
-            });
-            events.push(ResponseStreamEvent::ContentPartAdded {
-                item_id: message.id.clone(),
-                output_index,
-                content_index: 0,
-                part: crate::types::ContentPartOutput::OutputText {
-                    text: String::new(),
-                    annotations: vec![],
-                },
-            });
-            (output_index, message.id, 0)
-        };
 
-        if let Some(OutputItem::Message(message)) = self.response.output.get_mut(output_index as usize)
+        if let Some(OutputItem::Message(message)) =
+            self.response.output.get_mut(output_index as usize)
             && let Some(crate::types::ContentPartOutput::OutputText { text, .. }) =
                 message.content.get_mut(content_index as usize)
         {
@@ -616,7 +616,10 @@ impl VertexStreamMapper {
         function_call: VertexFunctionCall,
     ) -> Vec<ResponseStreamEvent> {
         let call_id = tool_call_id(&function_call.name, part_index);
-        let arguments = function_call.args.unwrap_or(Value::Object(Map::new())).to_string();
+        let arguments = function_call
+            .args
+            .unwrap_or(Value::Object(Map::new()))
+            .to_string();
 
         if let Some(output_index) = self.tool_calls.get(&call_id).copied() {
             let mut delta = arguments.clone();
@@ -677,7 +680,8 @@ impl VertexStreamMapper {
         let mut events = Vec::new();
 
         if let Some(output_index) = self.message_output_index
-            && let Some(OutputItem::Message(message)) = self.response.output.get_mut(output_index as usize)
+            && let Some(OutputItem::Message(message)) =
+                self.response.output.get_mut(output_index as usize)
             && message.status != "completed"
         {
             let part = message.content.first().cloned().unwrap_or(
