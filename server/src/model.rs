@@ -1,5 +1,7 @@
+use llm_responses::ResponsesProvider;
 use llm_selector::LlmSelector;
 use llm_selector::genai::Client;
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RequestModel {
@@ -19,6 +21,25 @@ impl RequestModel {
                 llm_selector.select_client_by_tags(include, exclude).await
             }
             RequestModel::Id(id) => llm_selector.select_client_by_id(&id).await,
+        }
+    }
+
+    pub(crate) async fn select_responses_provider(
+        self,
+        llm_selector: &LlmSelector,
+    ) -> Option<(String, Arc<dyn ResponsesProvider>)> {
+        match self {
+            RequestModel::Model(model) => {
+                llm_selector
+                    .select_responses_provider_by_model(&model)
+                    .await
+            }
+            RequestModel::Tags { include, exclude } => {
+                llm_selector
+                    .select_responses_provider_by_tags(include, exclude)
+                    .await
+            }
+            RequestModel::Id(id) => llm_selector.select_responses_provider_by_id(&id).await,
         }
     }
 }

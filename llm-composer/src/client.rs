@@ -36,6 +36,7 @@ fn create_service_target_resolver(
             let model = ModelIden::new(
                 match provider.provider_type {
                     LlmProviderType::Azure => AdapterKind::OpenAI,
+                    LlmProviderType::Bedrock => AdapterKind::OpenAI,
                     LlmProviderType::Anthropic => AdapterKind::Anthropic,
                     LlmProviderType::Ollama => AdapterKind::Ollama,
                     LlmProviderType::OpenAI => AdapterKind::OpenAI,

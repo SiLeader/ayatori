@@ -1,7 +1,8 @@
 use actix_web::HttpResponse;
 use actix_web::http::StatusCode;
+use llm_responses::ResponsesError;
 use llm_selector::genai;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorResponse {
@@ -57,6 +58,34 @@ impl ErrorResponse {
             error: ApiError::incorrect_api_key_provided(),
         }
     }
+
+    fn internal(message: String) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            error: ApiError::internal(message),
+        }
+    }
+
+    pub(crate) fn feature_not_supported(feature: &str) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            error: ApiError::feature_not_supported(feature),
+        }
+    }
+
+    pub(crate) fn response_not_found() -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            error: ApiError::response_not_found(),
+        }
+    }
+
+    pub(crate) fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            error: ApiError::conflict(message.into()),
+        }
+    }
 }
 
 impl ApiError {
@@ -84,6 +113,60 @@ impl ApiError {
             error_type: ErrorType::AuthenticationError,
             param: None,
             code: "incorrect_api_key_provided".to_string(),
+        }
+    }
+
+    fn invalid_request(message: String) -> Self {
+        Self {
+            message,
+            error_type: ErrorType::InvalidRequestError,
+            param: None,
+            code: "invalid_request".to_string(),
+        }
+    }
+
+    fn feature_not_supported(feature: &str) -> Self {
+        Self {
+            message: format!("Feature not supported: {feature}"),
+            error_type: ErrorType::InvalidRequestError,
+            param: None,
+            code: "feature_not_supported".to_string(),
+        }
+    }
+
+    fn response_not_found() -> Self {
+        Self {
+            message: "Response not found".to_string(),
+            error_type: ErrorType::InvalidRequestError,
+            param: Some("response_id".to_string()),
+            code: "response_not_found".to_string(),
+        }
+    }
+
+    fn conflict(message: String) -> Self {
+        Self {
+            message,
+            error_type: ErrorType::InvalidRequestError,
+            param: None,
+            code: "conflict".to_string(),
+        }
+    }
+
+    fn upstream(message: String) -> Self {
+        Self {
+            message,
+            error_type: ErrorType::ApiError,
+            param: None,
+            code: "upstream_error".to_string(),
+        }
+    }
+
+    fn internal(message: String) -> Self {
+        Self {
+            message,
+            error_type: ErrorType::ApiError,
+            param: None,
+            code: "internal_error".to_string(),
         }
     }
 
@@ -203,4 +286,68 @@ impl From<genai::Error> for ErrorResponse {
             },
         }
     }
+}
+
+impl From<ResponsesError> for ErrorResponse {
+    fn from(value: ResponsesError) -> Self {
+        match value {
+            ResponsesError::Authentication => Self::invalid_authentication(),
+            ResponsesError::InvalidRequest(message) => Self {
+                status: StatusCode::BAD_REQUEST,
+                error: ApiError::invalid_request(message),
+            },
+            ResponsesError::Unsupported(feature) => Self::feature_not_supported(feature),
+            ResponsesError::Http { status, body } => {
+                let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+                if let Some(error) = parse_openai_error(&body) {
+                    Self { status, error }
+                } else {
+                    Self {
+                        status,
+                        error: ApiError::upstream(body),
+                    }
+                }
+            }
+            ResponsesError::Transport(error) => Self::internal(format!("transport: {error}")),
+            ResponsesError::Serde(error) => Self::internal(format!("serde: {error}")),
+            ResponsesError::MalformedResponse(message) => {
+                Self::internal(format!("malformed response: {message}"))
+            }
+            ResponsesError::Internal(message) => Self::internal(message),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiErrorEnvelope {
+    error: OpenAiError,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiError {
+    message: String,
+    #[serde(rename = "type")]
+    error_type: String,
+    param: Option<String>,
+    code: Option<String>,
+}
+
+fn parse_openai_error(body: &str) -> Option<ApiError> {
+    let envelope: OpenAiErrorEnvelope = serde_json::from_str(body).ok()?;
+    let error_type = match envelope.error.error_type.as_str() {
+        "invalid_request_error" => ErrorType::InvalidRequestError,
+        "authentication_error" => ErrorType::AuthenticationError,
+        "api_error" => ErrorType::ApiError,
+        _ => return None,
+    };
+
+    Some(ApiError {
+        message: envelope.error.message,
+        error_type,
+        param: envelope.error.param,
+        code: envelope
+            .error
+            .code
+            .unwrap_or_else(|| "upstream_error".to_string()),
+    })
 }

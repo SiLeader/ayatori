@@ -1,5 +1,12 @@
 [workspace]
-members = ["configuration", "llm-composer", "llm-selector", "server", "token-measure"]
+members = [
+    "configuration",
+    "llm-composer",
+    "llm-responses",
+    "llm-selector",
+    "server",
+    "token-measure",
+]
 
 [workspace.package]
 edition = "2024"
@@ -8,6 +15,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 configuration = { path = "configuration" }
 llm-composer = { path = "llm-composer" }
+llm-responses = { path = "llm-responses" }
 llm-selector = { path = "llm-selector" }
 server = { path = "server" }
 token-measure = { path = "token-measure" }
@@ -37,12 +45,13 @@ clap = "4.6.1"
 
 [package]
 name = "ayatori"
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 configuration.workspace = true
+llm-responses.workspace = true
 llm-selector.workspace = true
 server.workspace = true
 token-measure.workspace = true

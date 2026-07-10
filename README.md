@@ -6,9 +6,10 @@ and priorities.
 ## Features
 
 - **OpenAI-like API** - Drop-in replacement for OpenAI API like endpoints
+- **Responses API** - `POST /v1/responses` plus stored-response management endpoints
 - **Multi-Provider Support** - Anthropic, OpenAI, Azure OpenAI, Ollama, VertexAI
 - **Intelligent Routing** - Route requests based on:
-    - Tags (e.g., "fast", "cheap", "summarize")
+    - Tags (e.g., "fast", "cheap", "summarize") with include/exclude support
     - Model names
     - Provider IDs
     - Usage capacity limits
@@ -79,6 +80,11 @@ client_fallback_enabled = true
 [usage_store]
 type = "Local"
 
+[response_store]
+type = "Local"
+ttl_seconds = 86400
+max_entries = 10000
+
 # Or use Redis for distributed tracking
 # [usage_store]
 # type = "Redis"
@@ -92,7 +98,7 @@ type = "ByteLength"
 magnification_ratio = 0.3
 ```
 
-Please see [sample/config.toml](./sample/config.toml).
+Please see [sample/config.toml](./sample/config.toml) and [docs/configuration.md](./docs/configuration.md).
 
 ### LLM Provider Configuration
 
@@ -103,6 +109,7 @@ Create an LLM configuration file with your providers:
 id = "anthropic-claude"
 default = true
 type = "Anthropic"
+responses_native = false
 priority = 1
 model = "claude-3-5-sonnet-20241022"
 tags = ["smart", "fast"]
@@ -114,6 +121,7 @@ capacity = { input_tokens = 100000, requests = 1000 }
 id = "openai-gpt4"
 default = false
 type = "OpenAI"
+responses_native = true
 priority = 2
 model = "gpt-4"
 tags = ["smart", "expensive"]
@@ -125,6 +133,7 @@ capacity = { input_tokens = 50000, requests = 500 }
 id = "ollama-local"
 default = false
 type = "Ollama"
+responses_native = false
 priority = 3
 model = "llama3:8b"
 tags = ["fast", "cheap", "local"]
@@ -158,6 +167,8 @@ api_key = "sk-..."
 ```toml
 type = "Azure"
 api_key = "your-azure-key"
+deployment = "gpt-4o-mini"
+api_version = "2025-04-01-preview"
 ```
 
 **Ollama** (`/etc/ayatori/credentials/ollama.toml`):
@@ -201,6 +212,139 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+#### Responses API
+
+**Endpoint:** `POST /v1/responses`
+
+Ayatori exposes an OpenAI-compatible Responses API across native and translated backends.
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key" \
+  -d '{
+    "model": "tags:fast",
+    "input": "Hello!"
+  }'
+```
+
+Supported companion endpoints:
+
+- `GET /v1/responses/{response_id}`
+- `DELETE /v1/responses/{response_id}`
+- `POST /v1/responses/{response_id}/cancel`
+- `GET /v1/responses/{response_id}/input_items`
+
+Common Responses features:
+
+| Feature | OpenAI | Azure | Anthropic | VertexAI | Ollama | Bedrock |
+|---|---|---|---|---|---|---|
+| Basic create | Yes | Yes | Yes | Yes | Yes | No |
+| Streaming | Yes | Yes | Yes | Yes | Yes | No |
+| Function calling | Yes | Yes | Yes | Yes | Yes | No |
+| Built-in tools | Yes | Yes | No | No | No | No |
+| Reasoning config | Yes | Yes | Yes | Yes | No | No |
+| Structured output | Yes | Yes | No | Yes | Yes | No |
+| Image input | Yes | Yes | Yes | Yes | Yes | No |
+| Native Responses backend | Yes | Yes | No | No | No | No |
+
+Gateway-managed features:
+
+- `previous_response_id`
+- `store: true | false`
+- `background: true`
+- stored response management endpoints
+
+Example: function calling
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "id:openai-gpt-4o-mini",
+    "input": "What is the weather in Tokyo?",
+    "tools": [{
+      "type": "function",
+      "name": "lookup_weather",
+      "description": "Lookup the weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": { "type": "string" }
+        },
+        "required": ["city"]
+      }
+    }],
+    "tool_choice": "required"
+  }'
+```
+
+Example: structured output
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "id:openai-gpt-4o-mini",
+    "input": "Return Tokyo as JSON",
+    "text": {
+      "format": {
+        "type": "json_schema",
+        "name": "city_response",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "city": { "type": "string" }
+          },
+          "required": ["city"]
+        },
+        "strict": true
+      }
+    }
+  }'
+```
+
+Example: streaming
+
+```bash
+curl -N -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "id:anthropic-claude",
+    "input": "Count to five",
+    "stream": true
+  }'
+```
+
+Example: previous response chaining
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "id:openai-gpt-4o-mini",
+    "input": "Remember that my city is Tokyo"
+  }'
+```
+
+Then use the returned response ID:
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "id:openai-gpt-4o-mini",
+    "input": "What city did I mention?",
+    "previous_response_id": "resp_..."
+  }'
+```
+
+Migration notes from Chat Completions:
+
+- `messages` becomes `input`
+- top-level system prompt becomes `instructions`
+- `choices[].message.content` becomes `output[]` and `output_text`
+
 ### Model Selection Strategies
 
 Ayatori supports three ways to select providers:
@@ -212,28 +356,54 @@ Select providers matching ALL specified tags (AND logic):
 ```json
 {
   "model": "tags:fast&cheap",
-  "messages": [
-    ...
-  ]
+  "messages": [...]
 }
 ```
 
-Or use singular form:
+Or use the singular alias `tag:`:
 
 ```json
 {
   "model": "tag:smart&local",
-  "messages": [
-    ...
-  ]
+  "messages": [...]
+}
+```
+
+**Exclude tags** — prefix a tag with `!` to skip providers that carry it:
+
+```json
+{
+  "model": "tags:fast&!vision",
+  "messages": [...]
+}
+```
+
+This selects providers tagged `fast` while excluding any provider tagged `vision`.
+
+You can combine multiple include and exclude tags:
+
+```json
+{
+  "model": "tags:fast&cheap&!vision&!slow",
+  "messages": [...]
+}
+```
+
+**Exclude-only** — omit include tags to match all providers, then filter by exclude tags:
+
+```json
+{
+  "model": "tags:!expensive",
+  "messages": [...]
 }
 ```
 
 Ayatori will:
 
-1. Find all providers with matching tags
-2. Filter out providers exceeding capacity limits
-3. Select the provider with the highest priority (lowest priority number)
+1. Find all providers matching the include tags (or all providers if none specified)
+2. Remove providers that have any of the exclude tags
+3. Filter out providers exceeding capacity limits
+4. Select the provider with the highest priority (lowest priority number)
 
 #### 2. Model-Based Selection
 
@@ -312,7 +482,7 @@ ayatori/
 2. **Authentication** validates bearer token (if configured)
 3. **Model Parsing** determines selection strategy (tags/model/id)
 4. **Provider Selection**:
-    - Tag-based: Filter by tags → filter by capacity → sort by priority
+    - Tag-based: Match include tags → remove exclude-tagged providers → filter by capacity → sort by priority
     - Model-based: Direct model-to-provider lookup
     - ID-based: Direct provider lookup
 5. **Fallback** to default provider if enabled and no match found
